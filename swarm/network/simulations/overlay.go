@@ -90,7 +90,33 @@ func NewSimNode(id *adapters.NodeId) node.Service {
 	}
 }
 
-func mocker(net *simulations.Network) {
+func createMockers() map[string]*simulations.MockerConfig {
+  configs := make(map[string]*simulations.MockerConfig)
+
+  defaultCfg := simulations.DefaultMockerConfig()
+  defaultCfg.Id = "start-stop"
+  defaultCfg.Description = "Starts and Stops nodes in go routines"
+  defaultCfg.Mocker = startStopMocker
+
+  bootNetworkCfg := simulations.DefaultMockerConfig()
+  bootNetworkCfg.Id = "bootNet"
+  bootNetworkCfg.Description = "Only boots up all nodes in the config"
+  bootNetworkCfg.Mocker = bootMocker
+
+  randomNodesCfg := simulations.DefaultMockerConfig()
+  randomNodesCfg.Id = "randomNodes"
+  randomNodesCfg.Description = "Boots nodes and then starts and stops some picking randomly"
+  randomNodesCfg.Mocker = randomMocker
+
+
+  configs[defaultCfg.Id] = defaultCfg
+  configs[bootNetworkCfg.Id] = bootNetworkCfg
+  configs[randomNodesCfg.Id] = randomNodesCfg
+
+  return configs
+}
+
+func setupMocker(net *simulations.Network) []*adapters.NodeId {
 	conf := net.Config()
 	conf.DefaultService = "overlay"
 
@@ -111,6 +137,7 @@ func mocker(net *simulations.Network) {
 		}
 		log.Debug(fmt.Sprintf("node %v starting up", id))
 	}
+
 	for i, id := range ids {
 		var peerId *adapters.NodeId
 		if i == 0 {
@@ -122,6 +149,49 @@ func mocker(net *simulations.Network) {
 			panic(err.Error())
 		}
 	}
+
+  return ids
+}
+
+func bootMocker(net *simulations.Network) {
+  setupMocker(net)
+}
+
+func randomMocker(net *simulations.Network) {
+  ids := setupMocker(net)
+
+  for {
+    var lowid, highid int
+    randWait  := rand.Intn(5000) + 1000
+    rand1     := rand.Intn(9)
+    rand2     := rand.Intn(9)
+    if rand1 < rand2 {
+      lowid = rand1
+      highid = rand2
+    } else if rand1 > rand2 {
+      highid = rand1
+      lowid = rand2
+    } else {
+      if rand1 == 0 {
+        rand2 = 9
+      } else if rand1 == 9 {
+        rand1 = 0
+      }
+    }
+    for i := lowid; i<highid; i++ {
+			log.Debug(fmt.Sprintf("node %v shutting down", ids[i]))
+      net.Stop(ids[i])
+      go func(id *adapters.NodeId) {
+	      time.Sleep(time.Duration(randWait) * time.Millisecond)
+        net.Start(id)
+      }(ids[i])
+	    time.Sleep(time.Duration(randWait) * time.Millisecond)
+    }
+  }
+}
+
+func startStopMocker(net *simulations.Network) {
+  ids := setupMocker(net)
 
 	for i, id := range ids {
 		n := 3000 + i*1000
@@ -154,9 +224,12 @@ func main() {
 	}
 	adapters.RegisterServices(services)
 
+  mockers  := createMockers()
+
 	config := &simulations.ServerConfig{
 		Adapter: adapters.NewSimAdapter(services),
-		Mocker:  mocker,
+    DefaultMockerId: "start-stop",
+    Mockers: mockers,
 	}
 
 	log.Info("starting simulation server on 0.0.0.0:8888...")

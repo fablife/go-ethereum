@@ -15,7 +15,8 @@ import (
 
 type ServerConfig struct {
 	Adapter adapters.NodeAdapter
-	Mocker  func(*Network)
+  DefaultMockerId string
+  Mockers map[string]*MockerConfig
 }
 
 type Server struct {
@@ -40,7 +41,8 @@ func NewServer(config *ServerConfig) *Server {
 	s.POST("/networks", s.CreateNetwork)
 	s.GET("/networks", s.GetNetworks)
 	s.GET("/networks/:netid", s.GetNetwork)
-	s.POST("/networks/:netid/mock", s.StartMocker)
+	s.POST("/networks/:netid/mock/:mockid", s.StartMocker)
+	s.GET("/networks/:netid/mock", s.GetMocker)
 	s.POST("/networks/:netid/nodes", s.CreateNode)
 	s.GET("/networks/:netid/nodes", s.GetNodes)
 	s.GET("/networks/:netid/nodes/:nodeid", s.GetNode)
@@ -104,17 +106,42 @@ func (s *Server) GetNetwork(w http.ResponseWriter, req *http.Request) {
 	s.JSON(w, http.StatusOK, network.Config())
 }
 
-func (s *Server) StartMocker(w http.ResponseWriter, req *http.Request) {
-	network := req.Context().Value("network").(*Network)
+func (s *Server) GetMocker(w http.ResponseWriter, req *http.Request) {
+  m := make(map[string]string)
 
-	if s.Mocker == nil {
+  for k,v := range s.Mockers {
+    m[k] = v.Description
+  }
+
+	s.JSON(w, http.StatusOK, m)
+}
+
+func (s *Server) StartMocker(w http.ResponseWriter, req *http.Request) {
+	network  := req.Context().Value("network").(*Network)
+	mockerid := req.Context().Value("mock").(string)
+
+	if len(s.Mockers) == 0 {
 		http.Error(w, "mocker not configured", http.StatusInternalServerError)
 		return
 	}
 
-	go s.Mocker(network)
+  if mockerid == "default" {
+    //if an empty mocker has been provided, just start the first available one
+    mockerid = s.DefaultMockerId
+  }
 
-	w.WriteHeader(http.StatusOK)
+  if mocker,ok := s.Mockers[mockerid]; ok {
+    if mocker.Mocker == nil {
+      http.Error(w, "mocker not configured", http.StatusInternalServerError)
+      return
+    }
+	  go mocker.Mocker(network)
+	  w.WriteHeader(http.StatusOK)
+  } else {
+    http.Error(w, "invalid mockerid provided", http.StatusBadRequest)
+    return
+  }
+
 }
 
 func (s *Server) streamNetworkEvents(network *Network, w http.ResponseWriter) {
@@ -312,6 +339,13 @@ func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
 			ctx = context.WithValue(ctx, "peer", peer)
 		}
 
+		if id := params.ByName("mockid"); id != "" {
+			if network == nil {
+				http.NotFound(w, req)
+				return
+			}
+			ctx = context.WithValue(ctx, "mock", id)
+		}
 		handler(w, req.WithContext(ctx))
 	}
 }
