@@ -29,6 +29,7 @@ package simulations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -37,7 +38,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
-	"github.com/ethereum/go-ethereum/pot"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -156,6 +156,20 @@ func (self *Node) NodeInfo() *p2p.NodeInfo {
 	return info
 }
 
+func (self *Node) MarshalJSON() ([]byte, error) {
+	type JsonNode struct {
+		Info   *p2p.NodeInfo        `json:"info,omitempty"`
+		Config *adapters.NodeConfig `json:"config,omitempty"`
+		Up     bool                 `json:"up"`
+	}
+	info := &JsonNode{
+		Info:   self.NodeInfo(),
+		Config: self.Config,
+		Up:     self.Up,
+	}
+	return json.Marshal(info)
+}
+
 // active connections are represented by the Node entry object so that
 // you journal updates could filter if passive knowledge about peers is
 // irrelevant
@@ -167,8 +181,6 @@ type Conn struct {
 	Up bool `json:"up"`
 	// reverse is false by default (One dialled/dropped the Other)
 	Reverse bool `json:"reverse"`
-	// A scalar distance value denoting how "far" Other is from One (Kademlia table)
-	Distance int `json:"distance"`
 	// indicates if a ControlEvent has already been fired for this connection
 	controlFired bool
 }
@@ -256,13 +268,11 @@ func (self *Network) newConn(oneID, otherID discover.NodeID) (*Conn, error) {
 	if other == nil {
 		return nil, fmt.Errorf("other %v does not exist", other)
 	}
-	distance, _ := pot.DefaultPof(256)(one.Addr(), other.Addr(), 0)
 	return &Conn{
-		One:      oneID,
-		Other:    otherID,
-		one:      one,
-		other:    other,
-		Distance: distance,
+		One:   oneID,
+		Other: otherID,
+		one:   one,
+		other: other,
 	}, nil
 }
 
@@ -513,7 +523,7 @@ func (self *Network) DidSend(sender, receiver discover.NodeID, msgcode uint64, m
 		One:      sender,
 		Other:    receiver,
 		Code:     msgcode,
-    Protocol: msgProtocol,
+		Protocol: msgProtocol,
 		Received: false,
 	}
 	self.events.Send(NewEvent(msg))
@@ -641,6 +651,10 @@ type NodeSnapshot struct {
 
 	// Snapshot is arbitrary data gathered from calling node.Snapshots()
 	Snapshots map[string][]byte `json:"snapshots,omitempty"`
+}
+
+func (self *NodeSnapshot) MarshalJSON() ([]byte, error) {
+	return json.Marshal(self.Snapshots)
 }
 
 // Snapshot creates a network snapshot

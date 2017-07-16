@@ -34,23 +34,38 @@ func newTestService(ctx *adapters.ServiceContext) (node.Service, error) {
 }
 
 func (t *testService) Protocols() []p2p.Protocol {
-	return []p2p.Protocol{{
-		Name:    "test",
-		Version: 1,
-		Length:  1,
-		Run:     t.Run,
-	}}
+	return []p2p.Protocol{
+		{
+			Name:    "test",
+			Version: 1,
+			Length:  3,
+			Run:     t.RunTest,
+		},
+		{
+			Name:    "dum",
+			Version: 1,
+			Length:  1,
+			Run:     t.RunDum,
+		},
+		{
+			Name:    "prb",
+			Version: 1,
+			Length:  1,
+			Run:     t.RunPrb,
+		},
+	}
 }
 
 func (t *testService) APIs() []rpc.API {
-	return []rpc.API{{
-		Namespace: "test",
-		Version:   "1.0",
-		Service: &TestAPI{
-			state:     &t.state,
-			peerCount: &t.peerCount,
-		},
-	}}
+	return []rpc.API{
+		{
+			Namespace: "test",
+			Version:   "1.0",
+			Service: &TestAPI{
+				state:     &t.state,
+				peerCount: &t.peerCount,
+			},
+		}}
 }
 
 func (t *testService) Start(server *p2p.Server) error {
@@ -61,7 +76,44 @@ func (t *testService) Stop() error {
 	return nil
 }
 
-func (t *testService) Run(_ *p2p.Peer, rw p2p.MsgReadWriter) error {
+func (t *testService) handshake(rw p2p.MsgReadWriter, code uint64) error {
+	errc := make(chan error, 2)
+	go func() { errc <- p2p.Send(rw, code, struct{}{}) }()
+	go func() { errc <- p2p.ExpectMsg(rw, code, struct{}{}) }()
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *testService) RunTest(_ *p2p.Peer, rw p2p.MsgReadWriter) error {
+	// perform a handshake using an empty struct
+	if err := t.handshake(rw, 2); err != nil {
+		return err
+	}
+	if err := t.handshake(rw, 1); err != nil {
+		return err
+	}
+	if err := t.handshake(rw, 0); err != nil {
+		return err
+	}
+
+	// track the peer
+	atomic.AddInt64(&t.peerCount, 1)
+	defer atomic.AddInt64(&t.peerCount, -1)
+
+	// block until the peer is dropped
+	for {
+		_, err := rw.ReadMsg()
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (t *testService) RunDum(_ *p2p.Peer, rw p2p.MsgReadWriter) error {
 	// perform a handshake using an empty struct
 	errc := make(chan error, 2)
 	go func() { errc <- p2p.Send(rw, 0, struct{}{}) }()
@@ -72,9 +124,24 @@ func (t *testService) Run(_ *p2p.Peer, rw p2p.MsgReadWriter) error {
 		}
 	}
 
-	// track the peer
-	atomic.AddInt64(&t.peerCount, 1)
-	defer atomic.AddInt64(&t.peerCount, -1)
+	// block until the peer is dropped
+	for {
+		_, err := rw.ReadMsg()
+		if err != nil {
+			return err
+		}
+	}
+}
+func (t *testService) RunPrb(_ *p2p.Peer, rw p2p.MsgReadWriter) error {
+	// perform a handshake using an empty struct
+	errc := make(chan error, 2)
+	go func() { errc <- p2p.Send(rw, 0, struct{}{}) }()
+	go func() { errc <- p2p.ExpectMsg(rw, 0, struct{}{}) }()
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			return err
+		}
+	}
 
 	// block until the peer is dropped
 	for {
@@ -180,57 +247,8 @@ func TestHTTPNetwork(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	// check we can retrieve details about the network
-	gotNetwork, err := client.GetNetwork()
-	if err != nil {
-		t.Fatalf("error getting network: %s", err)
-	}
-	if gotNetwork.ID != network.ID {
-		t.Fatalf("expected network to have ID %q, got %q", network.ID, gotNetwork.ID)
-	}
-
-	// create 2 nodes
-	nodeIDs := make([]string, 2)
-	for i := 0; i < 2; i++ {
-		node, err := client.CreateNode(nil)
-		if err != nil {
-			t.Fatalf("error creating node: %s", err)
-		}
-		nodeIDs[i] = node.ID
-	}
-
-	// check both nodes exist
-	nodes, err := client.GetNodes()
-	if err != nil {
-		t.Fatalf("error getting nodes: %s", err)
-	}
-	if len(nodes) != 2 {
-		t.Fatalf("expected 2 nodes, got %d", len(nodes))
-	}
-	for i, nodeID := range nodeIDs {
-		if nodes[i].ID != nodeID {
-			t.Fatalf("expected node %d to have ID %q, got %q", i, nodeID, nodes[i].ID)
-		}
-		node, err := client.GetNode(nodeID)
-		if err != nil {
-			t.Fatalf("error getting node %d: %s", i, err)
-		}
-		if node.ID != nodeID {
-			t.Fatalf("expected node %d to have ID %q, got %q", i, nodeID, node.ID)
-		}
-	}
-
-	// start both nodes
-	for _, nodeID := range nodeIDs {
-		if err := client.StartNode(nodeID); err != nil {
-			t.Fatalf("error starting node %q: %s", nodeID, err)
-		}
-	}
-
-	// connect the nodes
-	if err := client.ConnectNode(nodeIDs[0], nodeIDs[1]); err != nil {
-		t.Fatalf("error connecting nodes: %s", err)
-	}
+	nodeCount := 2
+	nodeIDs := startNetwork(network, client, t, nodeCount)
 
 	// check we got all the events
 	x := &expectEvents{t, events, sub}
@@ -256,6 +274,68 @@ func TestHTTPNetwork(t *testing.T) {
 		x.nodeEvent(nodeIDs[1], true),
 		x.connEvent(nodeIDs[0], nodeIDs[1], true),
 	)
+}
+
+func startNetwork(network *Network, client *Client, t *testing.T, nodeCount int) []string {
+	// check we can retrieve details about the network
+	gotNetwork, err := client.GetNetwork()
+	if err != nil {
+		t.Fatalf("error getting network: %s", err)
+	}
+	if gotNetwork.ID != network.ID {
+		t.Fatalf("expected network to have ID %q, got %q", network.ID, gotNetwork.ID)
+	}
+
+	// create nodecount nodes
+	nodeIDs := make([]string, nodeCount)
+	for i := 0; i < nodeCount; i++ {
+		node, err := client.CreateNode(nil)
+		if err != nil {
+			t.Fatalf("error creating node: %s", err)
+		}
+		nodeIDs[i] = node.ID
+	}
+
+	// check both nodes exist
+	nodes, err := client.GetNodes()
+	if err != nil {
+		t.Fatalf("error getting nodes: %s", err)
+	}
+	if len(nodes) != nodeCount {
+		t.Fatalf("expected %d nodes, got %d", nodeCount, len(nodes))
+	}
+	for i, nodeID := range nodeIDs {
+		if nodes[i].ID != nodeID {
+			t.Fatalf("expected node %d to have ID %q, got %q", i, nodeID, nodes[i].ID)
+		}
+		node, err := client.GetNode(nodeID)
+		if err != nil {
+			t.Fatalf("error getting node %d: %s", i, err)
+		}
+		if node.ID != nodeID {
+			t.Fatalf("expected node %d to have ID %q, got %q", i, nodeID, node.ID)
+		}
+	}
+
+	// start both nodes
+	for _, nodeID := range nodeIDs {
+		if err := client.StartNode(nodeID); err != nil {
+			t.Fatalf("error starting node %q: %s", nodeID, err)
+		}
+	}
+
+	// connect the nodes
+	for i := 0; i < nodeCount-1; i++ {
+		peerId := i + 1
+		if i == nodeCount-1 {
+			peerId = 0
+		}
+		if err := client.ConnectNode(nodeIDs[i], nodeIDs[peerId]); err != nil {
+			t.Fatalf("error connecting nodes: %s", err)
+		}
+	}
+
+	return nodeIDs
 }
 
 type expectEvents struct {
@@ -285,6 +365,34 @@ func (t *expectEvents) connEvent(one, other string, up bool) *Event {
 			Other: discover.MustHexID(other),
 			Up:    up,
 		},
+	}
+}
+
+func (t *expectEvents) expectMsg(filters map[MsgFilter]struct{}, msgCount int) {
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < msgCount; i++ {
+		select {
+		case event := <-t.events:
+
+			if event.Type != EventTypeMsg {
+				break
+			}
+
+			t.Logf("received %s event: %s", event.Type, event.Msg)
+
+			if event.Msg == nil {
+				t.Fatal("expected event.Msg to be set")
+			}
+			if _, ok := filters[MsgFilter{event.Msg.Protocol, event.Msg.Code}]; !ok {
+				t.Fatalf("expected event.Msg to match filter, got protocol '%s' with code '%d' while filter is '%v'", event.Msg.Protocol, event.Msg.Code, filters)
+			}
+
+		case err := <-t.sub.Err():
+			t.Fatalf("network stream closed unexpectedly: %s", err)
+
+		case <-timeout:
+			t.Fatal("timed out waiting for expected events")
+		}
 	}
 }
 
@@ -516,4 +624,108 @@ func TestHTTPSnapshot(t *testing.T) {
 		x.connEvent(nodes[0].ID, nodes[1].ID, false),
 		x.connEvent(nodes[0].ID, nodes[1].ID, true),
 	)
+}
+
+func TestMsgFilterPassMultiple(t *testing.T) {
+	// start the server
+	network, s := testHTTPServer(t)
+	defer s.Close()
+
+	client := NewClient(s.URL)
+	events := make(chan *Event, 100)
+	filterstr := "prb:0;test:0"
+	sub, err := client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err != nil {
+		t.Fatalf("error subscribing to network events: %s", err)
+	}
+	defer sub.Unsubscribe()
+	// check we got all the events
+
+	nodeCount := 30
+	startNetwork(network, client, t, nodeCount)
+	x := &expectEvents{t, events, sub}
+
+	filters := make(map[MsgFilter]struct{})
+	filters[MsgFilter{Proto: "prb", Code: 0}] = struct{}{}
+	filters[MsgFilter{Proto: "dum", Code: 1}] = struct{}{}
+	filters[MsgFilter{Proto: "test", Code: 0}] = struct{}{}
+	x.expectMsg(filters, 100)
+}
+
+func TestMsgFilterPassWildcard(t *testing.T) {
+	// start the server
+	network, s := testHTTPServer(t)
+	defer s.Close()
+
+	client := NewClient(s.URL)
+	events := make(chan *Event, 100)
+	filterstr := "prb:0,2-test:*"
+	sub, err := client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err != nil {
+		t.Fatalf("error subscribing to network events: %s", err)
+	}
+	defer sub.Unsubscribe()
+	// check we got all the events
+
+	nodeCount := 30
+	startNetwork(network, client, t, nodeCount)
+	x := &expectEvents{t, events, sub}
+
+	filters := make(map[MsgFilter]struct{})
+	filters[MsgFilter{Proto: "prb", Code: 0}] = struct{}{}
+	filters[MsgFilter{Proto: "prb", Code: 2}] = struct{}{}
+	filters[MsgFilter{Proto: "test", Code: 0}] = struct{}{}
+	filters[MsgFilter{Proto: "test", Code: 1}] = struct{}{}
+	filters[MsgFilter{Proto: "test", Code: 2}] = struct{}{}
+	x.expectMsg(filters, 100)
+}
+
+func TestMsgFilterPassSingle(t *testing.T) {
+	// start the server
+	network, s := testHTTPServer(t)
+	defer s.Close()
+
+	client := NewClient(s.URL)
+	events := make(chan *Event, 10)
+	filterstr := "dum:0"
+	sub, err := client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err != nil {
+		t.Fatalf("error subscribing to network events: %s", err)
+	}
+	defer sub.Unsubscribe()
+	// check we got all the events
+
+	nodeCount := 10
+	startNetwork(network, client, t, nodeCount)
+	x := &expectEvents{t, events, sub}
+
+	filters := make(map[MsgFilter]struct{})
+	filters[MsgFilter{Proto: "dum", Code: 0}] = struct{}{}
+	x.expectMsg(filters, 10)
+}
+
+func TestMsgFilterFailBadParams(t *testing.T) {
+	// start the server
+	_, s := testHTTPServer(t)
+
+	client := NewClient(s.URL)
+	events := make(chan *Event, 10)
+	filterstr := "foo:"
+	_, err := client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err == nil {
+		t.Fatalf("expected event subscription to fail but succeeded!")
+	}
+
+	filterstr = "bzz:aa"
+	_, err = client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err == nil {
+		t.Fatalf("expected event subscription to fail but succeeded!")
+	}
+
+	filterstr = "invalid"
+	_, err = client.SubscribeNetworkWithMsgFilter(events, false, filterstr)
+	if err == nil {
+		t.Fatalf("expected event subscription to fail but succeeded!")
+	}
+	s.Close()
 }
