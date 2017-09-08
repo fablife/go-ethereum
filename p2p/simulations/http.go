@@ -283,11 +283,10 @@ func NewServer(network *Network, config ServerConfig) *Server {
 	s.GET("/", s.GetNetwork)
 	s.POST("/start", s.StartNetwork)
 	s.POST("/stop", s.StopNetwork)
+	s.POST("/reset", s.ResetNetwork)
 	s.GET("/events", s.StreamNetworkEvents)
 	s.GET("/snapshot", s.CreateSnapshot)
 	s.POST("/snapshot", s.LoadSnapshot)
-	s.POST("/mock/:mockid", s.StartMocker)
-	s.GET("/mock", s.GetMocker)
 	s.POST("/nodes", s.CreateNode)
 	s.GET("/nodes", s.GetNodes)
 	s.GET("/nodes/:nodeid", s.GetNode)
@@ -325,42 +324,11 @@ func (s *Server) StopNetwork(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-//Get the info for a particular mocker
-func (s *Server) GetMocker(w http.ResponseWriter, req *http.Request) {
-	m := make(map[string]string)
+// StopNetwork stops all nodes in the network
+func (s *Server) ResetNetwork(w http.ResponseWriter, req *http.Request) {
+	s.network.Reset()
 
-	for k, v := range s.Mockers {
-		m[k] = v.Description
-	}
-
-	s.JSON(w, http.StatusOK, m)
-}
-
-func (s *Server) StartMocker(w http.ResponseWriter, req *http.Request) {
-	mockerid := req.Context().Value("mock").(string)
-
-	if len(s.Mockers) == 0 {
-		//don't require a mocker to be present
-		s.JSON(w, http.StatusNotModified, "No mocker configured")
-		return
-	}
-
-	if mockerid == "default" {
-		//choose the default mocker
-		mockerid = s.DefaultMockerID
-	}
-
-	if mocker, ok := s.Mockers[mockerid]; ok {
-		if mocker.Mocker == nil {
-			http.Error(w, "mocker not configured", http.StatusInternalServerError)
-			return
-		}
-		go mocker.Mocker(s.network)
-		w.WriteHeader(http.StatusOK)
-	} else {
-		http.Error(w, "invalid mockerid provided", http.StatusBadRequest)
-		return
-	}
+	w.WriteHeader(http.StatusOK)
 }
 
 //This struct defines the filtering behavior

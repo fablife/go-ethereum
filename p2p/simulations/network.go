@@ -635,6 +635,17 @@ func (self *Network) Shutdown() {
 	}
 }
 
+func (self *Network) Reset() {
+	for k := range self.nodeMap {
+		delete(self.nodeMap, k)
+	}
+	for c := range self.connMap {
+		delete(self.connMap, c)
+	}
+	self.Nodes = nil
+	self.Conns = nil
+}
+
 func ConnLabel(source, target discover.NodeID) string {
 	var first, second discover.NodeID
 	if bytes.Compare(source.Bytes(), target.Bytes()) > 0 {
