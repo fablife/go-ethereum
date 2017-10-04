@@ -60,7 +60,7 @@ func Parse(rawuri string) (*URI, error) {
 
 	// check the scheme is valid
 	switch uri.Scheme {
-	case "bzz", "bzzi", "bzzr":
+	case "bzz", "bzzi", "bzzr", "bzzh":
 	default:
 		return nil, fmt.Errorf("unknown scheme %q", u.Scheme)
 	}
@@ -85,6 +85,10 @@ func Parse(rawuri string) (*URI, error) {
 
 func (u *URI) Raw() bool {
 	return u.Scheme == "bzzr"
+}
+
+func (u *URI) EnsResolve() bool {
+	return u.Scheme == "bzzh"
 }
 
 func (u *URI) Immutable() bool {

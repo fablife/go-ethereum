@@ -18,6 +18,7 @@ package http_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -32,6 +33,39 @@ import (
 	"github.com/ethereum/go-ethereum/swarm/storage"
 	"github.com/ethereum/go-ethereum/swarm/testutil"
 )
+
+func TestBzzhGetPath(t *testing.T) {
+	successEns := "theswarm.eth"
+	failEns := "failtest.eth"
+	successAddr := "/bzzh://" + successEns
+	failAddr := "/bzzh://" + failEns
+
+	srv := testutil.NewTestSwarmServerWithEns(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + successAddr)
+	if err != nil {
+		t.Fatalf("Failed to resolve %s: %v", successAddr, err)
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Failed to resolve %s,  Unexpected StatusCode %d in response", successAddr, resp.StatusCode)
+	}
+	respbody, err := ioutil.ReadAll(resp.Body)
+	if string(respbody) != hex.EncodeToString(testutil.EnsSuccessResolveNames[successEns].Bytes()) {
+		t.Fatalf("Failed to retrieve ENS name, Expected hash %s but got %s", hex.EncodeToString(testutil.EnsSuccessResolveNames[successEns].Bytes()), respbody)
+	}
+
+	resp, err = http.Get(srv.URL + failAddr)
+	if err != nil {
+		t.Fatalf("Failed to resolve %s: %v", failAddr, err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected StatusCode NotFound %d in response, got %d", http.StatusNotFound, resp.StatusCode)
+	}
+
+}
 
 func TestBzzrGetPath(t *testing.T) {
 

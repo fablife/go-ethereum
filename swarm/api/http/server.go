@@ -21,6 +21,7 @@ package http
 
 import (
 	"archive/tar"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -288,6 +289,21 @@ func (s *Server) HandleDelete(w http.ResponseWriter, r *Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, newKey)
+}
+
+// HandleGetRaw handles a GET request to bzzr://<key> and responds with
+// the raw content stored at the given storage key
+func (s *Server) HandleGetEnsResolve(w http.ResponseWriter, r *Request) {
+	// try and resolve the address
+	hash, err := s.api.EnsResolve(r.uri)
+	if err != nil {
+		s.NotFound(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, hex.EncodeToString(hash.Bytes()))
 }
 
 // HandleGetRaw handles a GET request to bzzr://<key> and responds with
@@ -598,6 +614,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET":
 		if uri.Raw() {
 			s.HandleGetRaw(w, req)
+			return
+		}
+
+		if uri.EnsResolve() {
+			s.HandleGetEnsResolve(w, req)
 			return
 		}
 

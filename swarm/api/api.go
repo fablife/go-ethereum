@@ -77,6 +77,15 @@ func (self *Api) Store(data io.Reader, size int64, wg *sync.WaitGroup) (key stor
 
 type ErrResolve error
 
+// DNS Resolver for ENS only
+func (self *Api) EnsResolve(uri *URI) (resolved common.Hash, err error) {
+	if self.dns == nil {
+		return common.Hash{}, fmt.Errorf("no DNS to resolve name: %q", uri.Addr)
+	}
+	resolved, err = self.dns.Resolve(uri.Addr)
+	return
+}
+
 // DNS Resolver
 func (self *Api) Resolve(uri *URI) (storage.Key, error) {
 	log.Trace(fmt.Sprintf("Resolving : %v", uri.Addr))
