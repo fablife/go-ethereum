@@ -87,7 +87,7 @@ var (
 	}
 	SwarmConfigPathFlag = cli.StringFlag{
 		Name:  "bzzconfig",
-		Usage: "Swarm config file path (datadir/bzz)",
+		Usage: "DEPRECATED: please use --config path/to/TOML-file",
 	}
 	SwarmSwapEnabledFlag = cli.BoolFlag{
 		Name:  "swap",
@@ -302,6 +302,8 @@ Remove corrupt entries from a local chunk database.
 DEPRECATED: use 'swarm db clean'.
 `,
 		},
+		// See config.go
+		dumpConfigCommand,
 	}
 	sort.Sort(cli.CommandsByName(app.Commands))
 
@@ -325,6 +327,7 @@ DEPRECATED: use 'swarm db clean'.
 		CorsStringFlag,
 		EnsAPIFlag,
 		EnsAddrFlag,
+		SwarmTomlConfigPathFlag,
 		SwarmConfigPathFlag,
 		SwarmSwapEnabledFlag,
 		SwarmSwapAPIFlag,
