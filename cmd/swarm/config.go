@@ -23,32 +23,53 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strconv"
 	"unicode"
 
 	cli "gopkg.in/urfave/cli.v1"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/naoina/toml"
+
+	bzzapi "github.com/ethereum/go-ethereum/swarm/api"
 )
 
 var (
-	dumpConfigCommand = cli.Command{
+	//flag definition for the dumpconfig command
+	DumpConfigCommand = cli.Command{
 		Action:      utils.MigrateFlags(dumpConfig),
 		Name:        "dumpconfig",
 		Usage:       "Show configuration values",
 		ArgsUsage:   "",
-		//Flags:       append(nodeFlags),
 		Flags:       app.Flags,
 		Category:    "MISCELLANEOUS COMMANDS",
 		Description: `The dumpconfig command shows configuration values.`,
 	}
 
-	swarmTomlConfigFileFlag = cli.StringFlag{
+	//flag definition for the config file command
+	SwarmTomlConfigPathFlag = cli.StringFlag{
 		Name:  "config",
 		Usage: "TOML configuration file",
 	}
+)
+
+//constants for environment variables
+const (
+	SWARM_ENV_CHEQUEBOOK_ADDR = "SWARM_CHEQUEBOOK_ADDR"
+	SWARM_ENV_ACCOUNT         = "SWARM_ACCOUNT"
+	SWARM_ENV_LISTEN_ADDR     = "SWARM_LISTEN_ADDR"
+	SWARM_ENV_PORT            = "SWARM_PORT"
+	SWARM_ENV_NETWORK_ID      = "SWARM_NETWORK_ID"
+	SWARM_ENV_SWAP_ENABLE     = "SWARM_SWAP_ENABLE"
+	SWARM_ENV_SWAP_API        = "SWARM_SWAP_API"
+	SWARM_ENV_SYNC_ENABLE     = "SWARM_SYNC_ENABLE"
+	SWARM_ENV_ENS_API         = "SWARM_ENS_API"
+	SWARM_ENV_ENS_ADDR        = "SWARM_ENS_ADDR"
+	SWARM_ENV_CORS            = "SWARM_CORS"
+	GETH_ENV_DATADIR          = "GETH_DATADIR"
 )
 
 // These settings ensure that TOML keys use the same names as Go struct fields.
@@ -68,71 +89,203 @@ var tomlSettings = toml.Config{
 	},
 }
 
-type bzzstatsConfig struct {
-	URL string `toml:",omitempty"`
+//before booting the swarm node, build the configuration
+func buildConfig(ctx *cli.Context) (config *bzzapi.Config, err error) {
+	//check for deprecated flags
+	checkDeprecated(ctx)
+	//start by creating a default config
+	config = bzzapi.NewDefaultConfig()
+	//first load settings from config file (if provided)
+	config, err = configFileOverride(config, ctx)
+	//override settings provided by command line
+	config = cmdLineOverride(config, ctx)
+	//override settings provided by environment variables
+	config = envVarsOverride(config)
+
+	return
 }
 
-type bzzConfig struct {
-	Node     node.Config
+//finally, after the configuration build phase is finished, initialize
+func initSwarmNode(config *bzzapi.Config, stack *node.Node, ctx *cli.Context) {
+	//at this point, all vars should be set in the Config
+	//get the account for the provided swarm account
+	prvkey := getAccount(config.BzzAccount, ctx, stack)
+	//finally, initialize the configuration
+	config.Init(prvkey)
+	//configuration phase completed here
+	log.Info("Starting Swarm with the following parameters:")
+	//after having created the config, print it to screen
+	log.Info(printConfig(config))
 }
 
-func loadConfig(file string, cfg *bzzConfig) error {
-	f, err := os.Open(file)
-	if err != nil {
-		return err
+//override the current config with whatever is in the config file, if a config file has been provided
+func configFileOverride(defaultConfig *bzzapi.Config, ctx *cli.Context) (*bzzapi.Config, error) {
+	var err error
+	//create a variable of type Config
+	conf := new(bzzapi.Config)
+	//set it to the defaultConfig passed
+	*conf = *defaultConfig
+
+	//only do something if the -config flag has been set
+	if ctx.GlobalIsSet(SwarmTomlConfigPathFlag.Name) {
+		var filepath string
+		if filepath = ctx.GlobalString(SwarmTomlConfigPathFlag.Name); filepath == "" {
+			utils.Fatalf("Config file flag provided with invalid file path")
+		}
+		f, err := os.Open(filepath)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+
+		//decode the TOML file into a Config struct
+		//note that we are decoding into the existing defaultConfig;
+		//if an entry is not present in the file, the default entry is kept
+		err = tomlSettings.NewDecoder(bufio.NewReader(f)).Decode(&conf)
+		// Add file name to errors that have a line number.
+		if _, ok := err.(*toml.LineError); ok {
+			err = errors.New(filepath + ", " + err.Error())
+		}
 	}
-	defer f.Close()
-
-	err = tomlSettings.NewDecoder(bufio.NewReader(f)).Decode(cfg)
-	// Add file name to errors that have a line number.
-	if _, ok := err.(*toml.LineError); ok {
-		err = errors.New(file + ", " + err.Error())
-	}
-	return err
+	return conf, err
 }
 
-func bzzDefaultNodeConfig() node.Config {
-	cfg := node.DefaultConfig
-	cfg.Name = clientIdentifier
-	cfg.Version = params.VersionWithCommit(gitCommit)
-	cfg.HTTPModules = append(cfg.HTTPModules)
-	return cfg
-}
+//override the current config with whatever is provided through the command line
+//most values are not allowed a zero value (empty string), if not otherwise noted
+func cmdLineOverride(currentConfig *bzzapi.Config, ctx *cli.Context) *bzzapi.Config {
 
-func makeConfigNode(ctx *cli.Context) (*node.Node, bzzConfig) {
-	// Load defaults.
-	cfg := bzzConfig{
-		Node: bzzDefaultNodeConfig(),
+	if keyid := ctx.GlobalString(SwarmAccountFlag.Name); keyid != "" {
+		currentConfig.BzzAccount = keyid
 	}
 
-	// Load config file.
-	if file := ctx.GlobalString(swarmTomlConfigFileFlag.Name); file != "" {
-		if err := loadConfig(file, &cfg); err != nil {
-			utils.Fatalf("%v", err)
+	if chbookaddr := ctx.GlobalString(ChequebookAddrFlag.Name); chbookaddr != "" {
+		currentConfig.Contract = common.HexToAddress(chbookaddr)
+	}
+
+	if networkid := ctx.GlobalString(SwarmNetworkIdFlag.Name); networkid != "" {
+		if id, _ := strconv.Atoi(networkid); id != 0 {
+			currentConfig.NetworkId = uint64(id)
 		}
 	}
 
-	// Apply flags.
-	utils.SetNodeConfig(ctx, &cfg.Node)
-	stack, err := node.New(&cfg.Node)
-	if err != nil {
-		utils.Fatalf("Failed to create the protocol stack: %v", err)
+	if datadir := ctx.GlobalString(utils.DataDirFlag.Name); datadir != "" {
+		currentConfig.Path = datadir
 	}
 
-	return stack, cfg
+	bzzport := ctx.GlobalString(SwarmPortFlag.Name)
+	if len(bzzport) > 0 {
+		currentConfig.Port = bzzport
+	}
+
+	if bzzaddr := ctx.GlobalString(SwarmListenAddrFlag.Name); bzzaddr != "" {
+		currentConfig.ListenAddr = bzzaddr
+	}
+
+	if ctx.GlobalIsSet(SwarmSwapEnabledFlag.Name) {
+		currentConfig.SwapEnabled = true
+	}
+
+	if ctx.GlobalIsSet(SwarmSyncEnabledFlag.Name) {
+		currentConfig.SyncEnabled = true
+	}
+
+	currentConfig.SwapApi = ctx.GlobalString(SwarmSwapAPIFlag.Name)
+	if currentConfig.SwapEnabled && currentConfig.SwapApi == "" {
+		utils.Fatalf(SWARM_ERR_SWAP_SET_NO_API)
+	}
+
+	//EnsApi can be set to "", so can't check for empty string, as it is allowed!
+	if ctx.GlobalIsSet(EnsAPIFlag.Name) {
+		currentConfig.EnsApi = ctx.GlobalString(EnsAPIFlag.Name)
+	}
+
+	if ensaddr := ctx.GlobalString(EnsAddrFlag.Name); ensaddr != "" {
+		currentConfig.EnsRoot = common.HexToAddress(ensaddr)
+	}
+
+	if cors := ctx.GlobalString(CorsStringFlag.Name); cors != "" {
+		currentConfig.Cors = cors
+	}
+
+	return currentConfig
+
 }
 
-func makeFullNode(ctx *cli.Context) *node.Node {
-	stack, _ := makeConfigNode(ctx)
+//override the current config with whatver is provided in environment variables
+//most values are not allowed a zero value (empty string), if not otherwise noted
+func envVarsOverride(currentConfig *bzzapi.Config) (config *bzzapi.Config) {
 
-	return stack
+	if keyid := os.Getenv(SWARM_ENV_ACCOUNT); keyid != "" {
+		currentConfig.BzzAccount = keyid
+	}
+
+	if chbookaddr := os.Getenv(SWARM_ENV_CHEQUEBOOK_ADDR); chbookaddr != "" {
+		currentConfig.Contract = common.HexToAddress(chbookaddr)
+	}
+
+	if networkid := os.Getenv(SWARM_ENV_NETWORK_ID); networkid != "" {
+		if id, _ := strconv.Atoi(networkid); id != 0 {
+			currentConfig.NetworkId = uint64(id)
+		}
+	}
+
+	if datadir := os.Getenv(GETH_ENV_DATADIR); datadir != "" {
+		currentConfig.Path = datadir
+	}
+
+	bzzport := os.Getenv(SWARM_ENV_PORT)
+	if len(bzzport) > 0 {
+		currentConfig.Port = bzzport
+	}
+
+	if bzzaddr := os.Getenv(SWARM_ENV_LISTEN_ADDR); bzzaddr != "" {
+		currentConfig.ListenAddr = bzzaddr
+	}
+
+	if swapenable := os.Getenv(SWARM_ENV_SWAP_ENABLE); swapenable != "" {
+		if swap, err := strconv.ParseBool(swapenable); err != nil {
+			currentConfig.SwapEnabled = swap
+		}
+	}
+
+	if syncenable := os.Getenv(SWARM_ENV_SYNC_ENABLE); syncenable != "" {
+		if sync, err := strconv.ParseBool(syncenable); err != nil {
+			currentConfig.SyncEnabled = sync
+		}
+	}
+
+	if swapapi := os.Getenv(SWARM_ENV_SWAP_API); swapapi != "" {
+		currentConfig.SwapApi = swapapi
+	}
+
+	if currentConfig.SwapEnabled && currentConfig.SwapApi == "" {
+		utils.Fatalf(SWARM_ERR_SWAP_SET_NO_API)
+	}
+
+	//EnsApi can be set to "", so can't check for empty string, as it is allowed
+	if ensapi, exists := os.LookupEnv(SWARM_ENV_ENS_API); exists == true {
+		currentConfig.EnsApi = ensapi
+	}
+
+	if ensaddr := os.Getenv(SWARM_ENV_ENS_ADDR); ensaddr != "" {
+		currentConfig.EnsRoot = common.HexToAddress(ensaddr)
+	}
+
+	if cors := os.Getenv(SWARM_ENV_CORS); cors != "" {
+		currentConfig.Cors = cors
+	}
+
+	return currentConfig
 }
 
 // dumpConfig is the dumpconfig command.
+// writes a default config to STDOUT
 func dumpConfig(ctx *cli.Context) error {
-	_, cfg := makeConfigNode(ctx)
+	cfg, err := buildConfig(ctx)
+	if err != nil {
+		utils.Fatalf(fmt.Sprintf("Uh oh - dumpconfig bumped triggered an error %v", err))
+	}
 	comment := ""
-
 	out, err := tomlSettings.Marshal(&cfg)
 	if err != nil {
 		return err
@@ -140,4 +293,21 @@ func dumpConfig(ctx *cli.Context) error {
 	io.WriteString(os.Stdout, comment)
 	os.Stdout.Write(out)
 	return nil
+}
+
+//deprecated flags checked here
+func checkDeprecated(ctx *cli.Context) {
+	// exit if the deprecated --ethapi flag is set
+	if ctx.GlobalString(DeprecatedEthAPIFlag.Name) != "" {
+		utils.Fatalf("--ethapi is no longer a valid command line flag, please use --ens-api and/or --swap-api.")
+	}
+}
+
+//print a Config as string
+func printConfig(config *bzzapi.Config) string {
+	out, err := tomlSettings.Marshal(&config)
+	if err != nil {
+		return (fmt.Sprintf("Something is not right with the configuration: %v", err))
+	}
+	return string(out)
 }
