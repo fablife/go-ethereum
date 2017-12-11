@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -36,6 +37,10 @@ var (
 	initCount    = flag.Int("conns", 1, "number of originally connected peers	 (default 1)")
 	snapshotFile = flag.String("snapshot", "", "create snapshot")
 	loglevel     = flag.Int("loglevel", 3, "verbosity of logs")
+
+  bmin = meters.NewMeter("DiscoveryBenchmarkMinDurations");
+  bmax = meters.NewMeter("DiscoveryBenchmarkMaxDurations");
+  bavg = meters.NewMeter("DiscoveryBenchmarkAverageDurations");
 )
 
 func init() {
@@ -45,6 +50,7 @@ func init() {
 	adapters.RegisterServices(services)
 
 	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*loglevel), log.StreamHandler(os.Stderr, log.TerminalFormat(false))))
+
 }
 
 // Benchmarks to test the average time it takes for an N-node ring
@@ -103,7 +109,7 @@ func testDiscoverySimulationSimAdapter(t *testing.T, nodes, conns int) {
 	testDiscoverySimulation(t, nodes, conns, adapters.NewSimAdapter(services))
 }
 
-func testDiscoverySimulation(t *testing.T, nodes, conns int, adapter adapters.NodeAdapter) {
+func testDiscoverySimulation(t *testing.T, nodes, conns int, adapter adapters.NodeAdapter, testName string) {
 	startedAt := time.Now()
 	result, err := discoverySimulation(nodes, conns, adapter)
 	if err != nil {
@@ -125,14 +131,19 @@ func testDiscoverySimulation(t *testing.T, nodes, conns int, adapter adapters.No
 		}
 		sum += int(duration.Nanoseconds())
 	}
-	t.Logf("Min: %s, Max: %s, Average: %s", min, max, time.Duration(sum/len(result.Passes))*time.Nanosecond)
+  avg = time.Duration(sum/len(result.Passes))*time.Nanosecond
+  bmin.Mark(min)
+  bmin.Mark(max)
+  bmin.Mark(avg)
+	t.Logf("Min: %s, Max: %s, Average: %s", min, max, avg)
 	finishedAt := time.Now()
 	t.Logf("Setup: %s, shutdown: %s", result.StartedAt.Sub(startedAt), finishedAt.Sub(result.FinishedAt))
 }
 
 func benchmarkDiscovery(b *testing.B, nodes, conns int) {
+  discoveryTestName = fmt.Sprintf("SwarmBenchmarkDiscovery_%d_%d",nodes, conns)
 	for i := 0; i < b.N; i++ {
-		result, err := discoverySimulation(nodes, conns, adapters.NewSimAdapter(services))
+		result, err := discoverySimulation(nodes, conns, adapters.NewSimAdapter(services), discoveryTestName)
 		if err != nil {
 			b.Fatalf("setting up simulation failed", result)
 		}
