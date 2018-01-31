@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -454,9 +455,13 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+  rate := time.Second / 40
+  throttle := time.Tick(rate)
+
 	for {
 		select {
 		case event := <-events:
+      <-throttle
 			// only send message events which match the filters
 			if event.Msg != nil && !filters.Match(event.Msg) {
 				continue
