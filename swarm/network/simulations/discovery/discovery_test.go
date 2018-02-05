@@ -1,4 +1,4 @@
-package discovery_test
+package discovery
 
 import (
 	"context"
@@ -77,7 +77,11 @@ func TestDiscoverySimulationDockerAdapter(t *testing.T) {
 func testDiscoverySimulationDockerAdapter(t *testing.T, nodes, conns int) {
 	adapter, err := adapters.NewDockerAdapter()
 	if err != nil {
-		t.Fatal(err)
+		if err == adapters.ErrLinuxOnly {
+			t.Skip(err)
+		} else {
+			t.Fatal(err)
+		}
 	}
 	testDiscoverySimulation(t, nodes, conns, adapter)
 }
@@ -319,5 +323,5 @@ func newService(ctx *adapters.ServiceContext) (node.Service, error) {
 		HiveParams:   hp,
 	}
 
-	return network.NewBzz(config, kad, nil, nil), nil
+	return network.NewBzz(config, kad, nil), nil
 }
