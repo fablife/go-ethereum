@@ -20,17 +20,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	p2ptest "github.com/ethereum/go-ethereum/p2p/testing"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/swarm/network"
 	"github.com/ethereum/go-ethereum/swarm/storage"
 )
@@ -47,7 +50,8 @@ var (
 )
 
 var services = adapters.Services{
-	"streamer": NewStreamerService,
+	//"streamer":     NewStreamerService,
+	"streamer": newSyncingProtocol,
 }
 
 func init() {
@@ -62,14 +66,14 @@ func init() {
 
 // NewStreamerService
 func NewStreamerService(ctx *adapters.ServiceContext) (node.Service, error) {
-  var err error
+	var err error
 	id := ctx.Config.ID
 	addr := toAddr(id)
 	kad := network.NewKademlia(addr.Over(), network.NewKadParams())
-  stores[id],err = createTestLocalStorageForId(id, addr)
-  if err != nil {
-    return nil, err
-  }
+	stores[id], err = createTestLocalStorageForId(id, addr)
+	if err != nil {
+		return nil, err
+	}
 	store := stores[id].(*storage.LocalStore)
 	db := storage.NewDBAPI(store)
 	delivery := NewDelivery(kad, db)
@@ -81,33 +85,34 @@ func NewStreamerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	go func() {
 		waitPeerErrC <- waitForPeers(r, 1*time.Second, peerCount(id))
 	}()
-	return r, nil
+	//	return r, nil
+	return &TestRegistry{Registry: r}, nil
 }
 
 //create a local store for the given node
 func createTestLocalStorageForId(id discover.NodeID, addr *network.BzzAddr) (storage.ChunkStore, error) {
-  var datadir string
-  var err error
-  datadir, err = ioutil.TempDir("", fmt.Sprintf("syncer-test-%s", id.TerminalString()))
-  if err != nil {
-    return nil, err
-  }
-  datadirs[id] = datadir
-  var store storage.ChunkStore
-  store, err = storage.NewTestLocalStoreForAddr(datadir, addr.Over())
+	var datadir string
+	var err error
+	datadir, err = ioutil.TempDir("", fmt.Sprintf("syncer-test-%s", id.TerminalString()))
 	if err != nil {
-    return nil, err
+		return nil, err
 	}
-  return store, nil
+	datadirs[id] = datadir
+	var store storage.ChunkStore
+	store, err = storage.NewTestLocalStoreForAddr(datadir, addr.Over())
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 //local stores need to be cleaned up after the sim is done
 func localStoreCleanup() {
-fmt.Println("Local store cleanup")
-  for i:=0; i<len(ids);i++ {
-    stores[ids[i]].Close()
-    os.RemoveAll(datadirs[ids[i]])
-  }
+	fmt.Println("Local store cleanup")
+	for i := 0; i < len(ids); i++ {
+		stores[ids[i]].Close()
+		os.RemoveAll(datadirs[ids[i]])
+	}
 }
 
 func newStreamerTester(t *testing.T) (*p2ptest.ProtocolTester, *Registry, *storage.LocalStore, func(), error) {
@@ -182,4 +187,108 @@ func (rrs *roundRobinStore) Close() {
 	for _, store := range rrs.stores {
 		store.Close()
 	}
+}
+
+type TestRegistry struct {
+	*Registry
+}
+
+func (r *TestRegistry) APIs() []rpc.API {
+	a := r.Registry.APIs()
+	a = append(a, rpc.API{
+		Namespace: "stream",
+		Version:   "0.1",
+		Service:   r,
+		Public:    true,
+	})
+	return a
+}
+
+func readAll(dpa *storage.DPA, hash []byte) (int64, error) {
+	r := dpa.Retrieve(hash)
+	buf := make([]byte, 1024)
+	var n int
+	var total int64
+	var err error
+	for (total == 0 || n > 0) && err == nil {
+		n, err = r.ReadAt(buf, total)
+		total += int64(n)
+	}
+	if err != nil && err != io.EOF {
+		return total, err
+	}
+	return total, nil
+}
+
+func (r *TestRegistry) ReadAll(hash common.Hash) (int64, error) {
+	return readAll(r.api.dpa, hash[:])
+}
+
+type TestExternalRegistry struct {
+	*Registry
+	hashesChan chan []byte
+}
+
+func (r *TestExternalRegistry) APIs() []rpc.API {
+	a := r.Registry.APIs()
+	a = append(a, rpc.API{
+		Namespace: "stream",
+		Version:   "0.1",
+		Service:   r,
+		Public:    true,
+	})
+	return a
+}
+
+// TODO: merge functionalities of testExternalClient and testExternalServer
+// with testClient and testServer.
+
+type testExternalClient struct {
+	t []byte
+	// wait0     chan bool
+	// batchDone chan bool
+	hashes chan []byte
+}
+
+func newTestExternalClient(t []byte, hashesChan chan []byte) *testExternalClient {
+	return &testExternalClient{
+		t: t,
+		// wait0:     make(chan bool),
+		// batchDone: make(chan bool),
+		hashes: hashesChan,
+	}
+}
+
+func (self *testExternalClient) NeedData(hash []byte) func() {
+	self.hashes <- hash
+	return func() {}
+}
+
+//func (self *testExternalClient) BatchDone(Stream, uint64, []byte, []byte) func() (*TakeoverProof, error) {
+func (self *testExternalClient) BatchDone(string, uint64, []byte, []byte) func() (*TakeoverProof, error) {
+	// close(self.batchDone)
+	return nil
+}
+
+func (self *testExternalClient) Close() {}
+
+type testExternalServer struct {
+	t []byte
+}
+
+func newTestExternalServer(t []byte) *testExternalServer {
+	return &testExternalServer{
+		t: t,
+	}
+}
+
+func (self *testExternalServer) SetNextBatch(from uint64, to uint64) ([]byte, uint64, uint64, *HandoverProof, error) {
+	return make([]byte, HashSize), from + 1, to + 1, nil, nil
+}
+
+func (self *testExternalServer) GetData([]byte) ([]byte, error) {
+	return nil, nil
+}
+
+func (self *testExternalServer) Close() {
 }
