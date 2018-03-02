@@ -46,6 +46,8 @@ var (
 	datadirs  map[discover.NodeID]string
 	conf      *synctestConfig
 	ppmap     map[discover.NodeID]*network.PeerPot
+
+	node2PoMap map[string]map[string]int
 )
 
 type synctestConfig struct {
@@ -59,7 +61,8 @@ type synctestConfig struct {
 }
 
 func init() {
-	rand.Seed(time.Now().Unix())
+	//rand.Seed(time.Now().Unix())
+	rand.Seed(100)
 
 	initSyncTest()
 }
@@ -75,6 +78,8 @@ func initSyncTest() {
 		addr.OAddr[0] = byte(0)
 		return addr
 	}
+
+	node2PoMap = make(map[string]map[string]int)
 
 	//local stores
 	stores = make(map[discover.NodeID]storage.ChunkStore)
@@ -222,50 +227,6 @@ func runSyncTest(chunkCount int, nodeCount int) error {
 	//after the test, clean up local stores initialized with createLocalStoreForId
 	defer localStoreCleanup()
 
-	trigger := make(chan discover.NodeID)
-	//triggerCheck defines what will be checked during the test
-	triggerCheck := func(ctx context.Context, id discover.NodeID) (bool, error) {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-			//case <-disconnectC:
-			//  log.Error("Disconnect event detected")
-			//  return false, ctx.Err()
-		default:
-		}
-
-		log.Debug(fmt.Sprintf("Checking node: %s", id))
-		//select the local store for the given node
-		lstore := stores[id]
-		//if there are more than one chunk, test only succeeds if all expected chunks are found
-		allSuccess := true
-		//this selects which chunks are expected to be found with the given node
-		//localChunks := nodesToChunksMap[id]
-		localChunks := conf.nodesToChunksMap[string(conf.idToAddrMap[id])]
-
-		//for each expected chunk, check if it is in the local store
-		for i := 0; i < len(localChunks); i++ {
-			//ignore zero chunks
-			chunk := conf.chunks[localChunks[i]]
-			if storage.IsZeroKey(chunk) {
-				continue
-			}
-			log.Debug(fmt.Sprintf("node has chunk: %s:", chunk))
-			if _, err := lstore.Get(chunk); err != nil {
-				log.Error(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
-				allSuccess = false
-			} else {
-				fmt.Println("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-				log.Info(fmt.Sprintf("Chunk %s FOUND for id %s", chunk, id))
-			}
-		}
-
-		return allSuccess, nil
-	}
-
-	timeout := 300 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 	//define the action to be performed before the test checks: start syncing
 	action := func(ctx context.Context) error {
 		// need to wait till an aynchronous process registers the peers in streamer.peers
@@ -295,11 +256,9 @@ func runSyncTest(chunkCount int, nodeCount int) error {
 			}
 			err = client.CallContext(ctx, nil, "stream_startSyncing")
 			if err != nil {
-				log.Error(fmt.Sprintf("FAILED CallContext %v", err))
-				return nil
+				return err
 			}
 		}
-		time.Sleep(10 * time.Second)
 		//now upload the chunks to the selected random single node
 		conf.chunks, err = uploadFileToSingleNodeStore(node.ID(), chunkCount)
 		if err != nil {
@@ -311,6 +270,55 @@ func runSyncTest(chunkCount int, nodeCount int) error {
 
 		return nil
 	}
+
+	trigger := make(chan discover.NodeID)
+	//check defines what will be checked during the test
+	check := func(ctx context.Context, id discover.NodeID) (bool, error) {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+			//case <-disconnectC:
+			//  log.Error("Disconnect event detected")
+			//  return false, ctx.Err()
+		default:
+		}
+
+		log.Debug(fmt.Sprintf("Checking node: %s", id))
+		//select the local store for the given node
+		lstore := stores[id]
+		//if there are more than one chunk, test only succeeds if all expected chunks are found
+		allSuccess := true
+		//this selects which chunks are expected to be found with the given node
+		//localChunks := nodesToChunksMap[id]
+		localChunks := conf.nodesToChunksMap[string(conf.idToAddrMap[id])]
+
+		//for each expected chunk, check if it is in the local store
+		for i := 0; i < len(localChunks); i++ {
+			//ignore zero chunks
+			chunk := conf.chunks[localChunks[i]]
+			log.Debug(fmt.Sprintf("node has chunk: %s:", chunk))
+			if _, err := lstore.Get(chunk); err != nil {
+				log.Error(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
+				//fmt.Println(node2PoMap[string(conf.idToAddrMap[id])][chunk.String()])
+				/*
+					fmt.Println(string(r.addr.Address()))
+					for ch := range localChunks {
+						fmt.Println(fmt.Sprintf("Node %s has po %d to node %s but po %d to chunk %s", id, po, string(addr.Address()), node2PoMap[string(addr.Address())][conf.chunks[ch].String()], conf.chunks[ch].String()))
+					}
+				*/
+				allSuccess = false
+			} else {
+				fmt.Println("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+				log.Info(fmt.Sprintf("Chunk %s FOUND for id %s", chunk, id))
+			}
+		}
+
+		return allSuccess, nil
+	}
+
+	timeout := 300 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	//for each tick, run the checks on all nodes
 	go func() {
@@ -338,7 +346,7 @@ func runSyncTest(chunkCount int, nodeCount int) error {
 		Trigger: trigger,
 		Expect: &simulations.Expectation{
 			Nodes: ids,
-			Check: triggerCheck,
+			Check: check,
 		},
 	})
 	//close(quitC)
@@ -361,21 +369,34 @@ func (r *TestRegistry) StartSyncing(ctx context.Context) error {
 
 	pos := make(map[int]discover.NodeID)
 
+	connMap := make(map[discover.NodeID]bool)
+
 	r.delivery.overlay.EachConn(nil, 256, func(addr network.OverlayConn, po int, nn bool) bool {
+		fmt.Println("----")
+		fmt.Println(po)
+		fmt.Println(nn)
+		fmt.Println("++++")
 		lastPO := po
 		if nn {
 			lastPO = maxPO
 		}
+
 		peerId := conf.addrToIdMap[string(addr.Address())]
-		fmt.Println(fmt.Sprintf("node %s has conn with %s at po %d and is nn: %t", r.addr.ID(), peerId, po, nn))
+		//fmt.Println(fmt.Sprintf("node %s has conn with %s at po %d and is nn: %t", r.addr.ID(), peerId, po, nn))
 		pos[po] = peerId
 		for i := po; i <= lastPO; i++ {
-			err = r.Subscribe(peerId, NewStream("SYNC", []byte{byte(i)}, false), &Range{From: 0, To: 0}, Top)
+			if _, ok := connMap[peerId]; ok {
+				continue
+			}
+			//err = r.Subscribe(peerId, NewStream("SYNC", []byte{uint8(i)}, true), &Range{From: 0, To: 0}, Top)
+			err = r.RequestSubscription(peerId, NewStream("SYNC", []byte{uint8(i)}, true), Top)
 			if err != nil {
 				log.Error(fmt.Sprintf("Error subscribing! %v", err))
-				return false
+				//return true
+				continue
 			}
 		}
+		connMap[peerId] = true
 		return true
 	})
 	prev := 0
@@ -384,34 +405,39 @@ func (r *TestRegistry) StartSyncing(ctx context.Context) error {
 		return fmt.Errorf("Not a Kademlia!")
 	}
 
+	//skipStart := 0
+	//skipEnd := 0
+
 	kad.EachBin(r.addr.Over(), pof, 0, func(po, size int, f func(func(val pot.Val, i int) bool) bool) bool {
-		skip := po - prev
 		/*
 			fmt.Println(prev)
 			fmt.Println(po)
 			fmt.Println(skip)
 		*/
 		remember := make(map[int]bool)
+		skip := po - prev
 		if skip > 1 {
-			f(func(val pot.Val, i int) bool {
-				//for c := po + 1; c < po+skip; c++ {
-				for c := po - 1; c > po-skip; c-- {
+			//if po <= kad.depth {
+			for c := po - 1; c > po-skip; c-- {
+				if exists, _ := remember[c]; exists {
+					continue
+				}
+				f(func(val pot.Val, i int) bool {
+					//for c := po + 1; c < po+skip; c++ {
 					//fmt.Println(c)
-					if exists, _ := remember[c]; exists {
-						continue
-					}
 					a := val.(network.OverlayPeer)
 					log.Warn(fmt.Sprintf("Request subscription for bin: %d", c))
 					log.Debug(fmt.Sprintf("Requesting subscription by: registry %s from peer %s", r.addr.ID(), conf.addrToIdMap[string(a.Address())]))
-					err = r.RequestSubscription(conf.addrToIdMap[string(a.Address())], NewStream("SYNC", []byte{byte(uint8(c))}, false), Top)
+					err = r.RequestSubscription(conf.addrToIdMap[string(a.Address())], NewStream("SYNC", []byte{uint8(c)}, true), Top)
+					//err = r.Subscribe(conf.addrToIdMap[string(a.Address())], NewStream("SYNC", []byte{uint8(m)}, true), &Range{}, Top)
 					if err != nil {
-						log.Error(fmt.Sprintf("Error subscribing! %v", err))
+						log.Error(fmt.Sprintf("Error in RequestSubsciption! %v", err))
 						return false
 					}
-					remember[c] = true
-				}
-				return true
-			})
+					return true
+				})
+				remember[c] = true
+			}
 		}
 		prev = po
 		return true
@@ -451,28 +477,60 @@ func mapKeysToNodes(conf *synctestConfig) *synctestConfig {
 	nodemap := make(map[string][]int)
 	//build a pot for chunk hashes
 	np := pot.NewPot(nil, 0)
-	mm := make(map[string]int)
+	indexmap := make(map[string]int)
 	for i, a := range conf.addrs {
-		mm[string(a)] = i
+		indexmap[string(a)] = i
 		np, _, _ = pot.Add(np, a, pof)
 	}
 	//for each address, run EachNeighbour on the chunk hashes pot to identify closest nodes
 	fmt.Println(conf.chunks)
 	for i := 0; i < len(conf.chunks); i++ {
-		pl := 256 //highest proximity
+		pl := 256 //highest possible proximity
 		var nns []int
 		np.EachNeighbour([]byte(conf.chunks[i]), pof, func(val pot.Val, po int) bool {
+			fmt.Println(po)
 			a := val.([]byte)
+			if pl < 256 && pl != po {
+				return false
+			}
 			if pl == 256 || pl == po {
 				fmt.Println(fmt.Sprintf("appending %s", conf.addrToIdMap[string(a)]))
-				nns = append(nns, mm[string(a)])
+				nns = append(nns, indexmap[string(a)])
 				nodemap[string(a)] = append(nodemap[string(a)], i)
+				if _, ok := node2PoMap[string(a)]; !ok {
+					node2PoMap[string(a)] = make(map[string]int)
+				}
+				node2PoMap[string(a)][string(conf.chunks[i])] = po
 			}
 			if pl == 256 && len(nns) >= testMinProxBinSize {
+				//maxProxBinSize has been reached at this po, so save it
+				//we will add all other nodes at the same po
 				pl = po
 			}
 			return true
 		})
+		/*
+			np.EachNeighbour([]byte(conf.chunks[i]), pof, func(val pot.Val, po int) bool {
+				a := val.([]byte)
+				np.EachNeighbour(a, pof, func(val pot.Val, po int) bool {
+					a := val.([]byte)
+
+					if pl < 256 && pl != po {
+						return false
+					}
+					if pl == 256 || pl == po {
+						fmt.Println(fmt.Sprintf("appending %s", conf.addrToIdMap[string(a)]))
+						nns = append(nns, indexmap[string(a)])
+						nodemap[string(a)] = append(nodemap[string(a)], i)
+					}
+					if pl == 256 && len(nns) >= testMinProxBinSize {
+						pl = po
+					}
+					return true
+				})
+				return false
+			})
+		*/
 		kmap[conf.chunks[i].String()] = nns
 		//log.Debug(fmt.Sprintf("Length for id %s: %d",ids[i],len(kmap[ids[i]])))
 	}

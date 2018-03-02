@@ -298,7 +298,7 @@ func (p *Peer) setClientParams(s Stream, params *clientParams) error {
 		return fmt.Errorf("client %v already exists", sk)
 	}
 	if p.clientParams[sk] != nil {
-		return fmt.Errorf("client params %v already set", sk)
+		return fmt.Errorf("client params %v already set, %s to %s", sk, p.streamer.addr.ID(), p.ID())
 	}
 	p.clientParams[sk] = params
 	return nil
