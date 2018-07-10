@@ -31,14 +31,17 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/ethereum/go-ethereum/swarm/netsim"
 	"github.com/ethereum/go-ethereum/swarm/network"
 	streamTesting "github.com/ethereum/go-ethereum/swarm/network/stream/testing"
 	"github.com/ethereum/go-ethereum/swarm/pot"
+	"github.com/ethereum/go-ethereum/swarm/state"
 	"github.com/ethereum/go-ethereum/swarm/storage"
 )
 
@@ -56,7 +59,8 @@ var (
 	live    bool
 	history bool
 
-	longrunning = flag.Bool("longrunning", false, "do run long-running tests")
+	longrunning  = flag.Bool("longrunning", false, "do run long-running tests")
+	waitKademlia = flag.Bool("waitkademlia", true, "wait for healthy kademlia before checking files availability")
 )
 
 type synctestConfig struct {
@@ -81,14 +85,14 @@ func initSyncTest() {
 		addr := network.NewAddrFromNodeID(id)
 		return addr
 	}
-	//global func to create local store
+	//local stores
+	stores = make(map[discover.NodeID]storage.ChunkStore)
 	if *useMockStore {
 		createStoreFunc = createMockStore
+		createGlobalStore()
 	} else {
 		createStoreFunc = createTestLocalStorageForId
 	}
-	//local stores
-	stores = make(map[discover.NodeID]storage.ChunkStore)
 	//data directories for each node and store
 	datadirs = make(map[discover.NodeID]string)
 	//deliveries for each node
@@ -141,6 +145,160 @@ func TestSyncing(t *testing.T) {
 				testSyncing(t, chnk, n)
 			}
 		}
+	}
+}
+
+func TestNewSyncing(t *testing.T) {
+	chunkCount := 32
+	nodeCount := 16
+
+	bucketKeyStore := netsim.BucketKey("store")
+	sim := netsim.New(map[string]netsim.ServiceFunc{
+		"streamer": func(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
+
+			id := ctx.Config.ID
+			addr := network.NewAddrFromNodeID(id)
+			store, datadir, err := createTestLocalStorageForId2(id, addr)
+			if err != nil {
+				return nil, nil, err
+			}
+			bucket.Store(bucketKeyStore, store)
+			cleanup = func() {
+				store.Close()
+				os.RemoveAll(datadir)
+			}
+			localStore := store.(*storage.LocalStore)
+			db := storage.NewDBAPI(localStore)
+			kad := network.NewKademlia(addr.Over(), network.NewKadParams())
+			delivery := NewDelivery(kad, db)
+			bucket.Store("delivery", delivery)
+
+			r := NewRegistry(addr, delivery, db, state.NewInmemoryStore(), &RegistryOptions{
+				SkipCheck:       defaultSkipCheck,
+				DoRetrieve:      false,
+				DoSync:          true,
+				SyncUpdateDelay: 0,
+			})
+			RegisterSwarmSyncerServer(r, db)
+			RegisterSwarmSyncerClient(r, db)
+
+			fileStore := storage.NewFileStore(storage.NewNetStore(localStore, getRetrieveFunc(id)), storage.NewFileStoreParams())
+			testRegistry := &TestRegistry{Registry: r, fileStore: fileStore}
+			bucket.Store("registry", testRegistry)
+
+			return testRegistry, cleanup, nil
+
+		},
+	})
+	defer sim.Close()
+
+	log.Info("Initializing test config")
+	_, err := sim.AddNodesAndConnectFull(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	conf := &synctestConfig{}
+	//map of discover ID to indexes of chunks expected at that ID
+	conf.idToChunksMap = make(map[discover.NodeID][]int)
+	//map of overlay address to discover ID
+	conf.addrToIdMap = make(map[string]discover.NodeID)
+	//array where the generated chunk hashes will be stored
+	conf.hashes = make([]storage.Address, 0)
+	//time.Sleep(5 * time.Second)
+
+	err = sim.UploadSnapshot(fmt.Sprintf("testing/snapshot_%d.json", nodeCount))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := sim.Run(ctx, func(ctx context.Context, sim *netsim.Simulation) error {
+		nodeIDs := sim.UpNodeIDs()
+		for _, n := range nodeIDs {
+			//get the kademlia overlay address from this ID
+			a := network.ToOverlayAddr(n.Bytes())
+			//append it to the array of all overlay addresses
+			conf.addrs = append(conf.addrs, a)
+			//the proximity calculation is on overlay addr,
+			//the p2p/simulations check func triggers on discover.NodeID,
+			//so we need to know which overlay addr maps to which nodeID
+			conf.addrToIdMap[string(a)] = n
+		}
+
+		//select one index at random...
+		idx := rand.Intn(len(nodeIDs))
+		//...and get the the node at that index
+		//this is the node selected for upload
+		node := nodeIDs[idx]
+		item, ok := sim.NodeItem(node, bucketKeyStore)
+		if !ok {
+			return fmt.Errorf("No localstore")
+		}
+		lstore := item.(*storage.LocalStore)
+		hashes, err := uploadFileToSingleNodeStore2(node, chunkCount, lstore)
+		if err != nil {
+			return err
+		}
+		conf.hashes = append(conf.hashes, hashes...)
+		mapKeysToNodes(conf)
+		if *waitKademlia {
+			if _, err := sim.WaitTillHealthy(ctx, 2); err != nil {
+				return err
+			}
+		}
+
+		// File retrieval check is repeated until all uploaded files are retrieved from all nodes
+		// or until the timeout is reached.
+		allSuccess := false
+		for !allSuccess {
+			for _, id := range nodeIDs {
+				//log.Trace("file uploaded", "node", id, "key", key.String())
+				//for each expected chunk, check if it is in the local store
+				localChunks := conf.idToChunksMap[id]
+				localSuccess := true
+				for _, ch := range localChunks {
+					//get the real chunk by the index in the index array
+					chunk := conf.hashes[ch]
+					log.Trace(fmt.Sprintf("node has chunk: %s:", chunk))
+					//check if the expected chunk is indeed in the localstore
+					var err error
+					if *useMockStore {
+						if globalStore == nil {
+							//return false, fmt.Errorf("Something went wrong; using mockStore enabled but globalStore is nil")
+							return fmt.Errorf("Something went wrong; using mockStore enabled but globalStore is nil")
+						}
+						//use the globalStore if the mockStore should be used; in that case,
+						//the complete localStore stack is bypassed for getting the chunk
+						_, err = globalStore.Get(common.BytesToAddress(id.Bytes()), chunk)
+					} else {
+						//use the actual localstore
+						item, ok := sim.NodeItem(id, bucketKeyStore)
+						if !ok {
+							return fmt.Errorf("Error accessing localstore")
+						}
+						lstore := item.(*storage.LocalStore)
+						_, err = lstore.Get(chunk)
+					}
+					if err != nil {
+						log.Warn(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
+						localSuccess = false
+					} else {
+						log.Debug(fmt.Sprintf("Chunk %s IS FOUND for id %s", chunk, id))
+					}
+				}
+				allSuccess = localSuccess
+				time.Sleep(1 * time.Second)
+			}
+		}
+		if !allSuccess {
+			return fmt.Errorf("Not all chunks succeeded!")
+		}
+		return nil
+	})
+
+	if result.Error != nil {
+		t.Fatal(result.Error)
 	}
 }
 
@@ -361,7 +519,7 @@ func runSyncTest(chunkCount int, nodeCount int, live bool, history bool) error {
 			}
 			//start syncing!
 			var cnt int
-			err = client.CallContext(ctx, &cnt, "stream_startSyncing")
+			err = client.CallContext(ctx, &cnt, "stream_tartSyncing")
 			if err != nil {
 				return err
 			}
@@ -512,7 +670,7 @@ func (r *TestRegistry) StartSyncing(ctx context.Context) (int, error) {
 	//iterate over each bin and solicit needed subscription to bins
 	kad.EachBin(r.addr.Over(), pof, 0, func(conn network.OverlayConn, po int) bool {
 		//identify begin and start index of the bin(s) we want to subscribe to
-		log.Debug(fmt.Sprintf("Requesting subscription by: registry %s from peer %s for bin: %d", r.addr.ID(), conf.addrToIdMap[string(conn.Address())], po))
+		//log.Debug(fmt.Sprintf("Requesting subscription by: registry %s from peer %s for bin: %d", r.addr.ID(), conf.addrToIdMap[string(conn.Address())], po))
 		var histRange *Range
 		if history {
 			histRange = &Range{}
@@ -574,6 +732,27 @@ func mapKeysToNodes(conf *synctestConfig) {
 }
 
 //upload a file(chunks) to a single local node store
+func uploadFileToSingleNodeStore2(id discover.NodeID, chunkCount int, lstore *storage.LocalStore) ([]storage.Address, error) {
+	log.Debug(fmt.Sprintf("Uploading to node id: %s", id))
+	size := chunkSize
+	fileStore := storage.NewFileStore(lstore, storage.NewFileStoreParams())
+	var rootAddrs []storage.Address
+	for i := 0; i < chunkCount; i++ {
+		rk, wait, err := fileStore.Store(context.TODO(), io.LimitReader(crand.Reader, int64(size)), int64(size), false)
+		if err != nil {
+			return nil, err
+		}
+		err = wait(context.TODO())
+		if err != nil {
+			return nil, err
+		}
+		rootAddrs = append(rootAddrs, (rk))
+	}
+
+	return rootAddrs, nil
+}
+
+//upload a file(chunks) to a single local node store
 func uploadFileToSingleNodeStore(id discover.NodeID, chunkCount int) ([]storage.Address, error) {
 	log.Debug(fmt.Sprintf("Uploading to node id: %s", id))
 	lstore := stores[id]
@@ -581,12 +760,11 @@ func uploadFileToSingleNodeStore(id discover.NodeID, chunkCount int) ([]storage.
 	fileStore := storage.NewFileStore(lstore, storage.NewFileStoreParams())
 	var rootAddrs []storage.Address
 	for i := 0; i < chunkCount; i++ {
-		ctx := context.TODO()
-		rk, wait, err := fileStore.Store(ctx, io.LimitReader(crand.Reader, int64(size)), int64(size), false)
+		rk, wait, err := fileStore.Store(context.TODO(), io.LimitReader(crand.Reader, int64(size)), int64(size), false)
 		if err != nil {
 			return nil, err
 		}
-		err = wait(ctx)
+		err = wait(context.TODO())
 		if err != nil {
 			return nil, err
 		}
@@ -720,4 +898,23 @@ func createTestLocalStorageForId(id discover.NodeID, addr *network.BzzAddr) (sto
 		return nil, err
 	}
 	return store, nil
+}
+
+//create a local store for the given node
+func createTestLocalStorageForId2(id discover.NodeID, addr *network.BzzAddr) (storage.ChunkStore, string, error) {
+	var datadir string
+	var err error
+	datadir, err = ioutil.TempDir("", fmt.Sprintf("syncer-test-%s", id.TerminalString()))
+	if err != nil {
+		return nil, "", err
+	}
+	var store storage.ChunkStore
+	params := storage.NewDefaultLocalStoreParams()
+	params.ChunkDbPath = datadir
+	params.BaseKey = addr.Over()
+	store, err = storage.NewTestLocalStoreForAddr(params)
+	if err != nil {
+		return nil, datadir, err
+	}
+	return store, datadir, nil
 }
