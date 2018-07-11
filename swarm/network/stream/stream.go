@@ -144,7 +144,7 @@ func NewRegistry(addr *network.BzzAddr, delivery *Delivery, db *storage.DBAPI, i
 				timer := time.NewTimer(options.SyncUpdateDelay)
 				// Hard limit to sync update delay, preventing long delays
 				// on a very dynamic network
-				maxTimer := time.NewTimer(3 * time.Minute)
+				maxTimer := time.NewTimer(0 * time.Minute)
 			loop:
 				for {
 					select {
