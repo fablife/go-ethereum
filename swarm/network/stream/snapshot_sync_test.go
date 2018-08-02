@@ -244,7 +244,7 @@ func testSyncingViaGlobalSync(t *testing.T, chunkCount int, nodeCount int) {
 						_, err = lstore.Get(ctx, chunk)
 					}
 					if err != nil {
-						log.Warn(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
+						//log.Warn(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
 						localSuccess = false
 						// Do not get crazy with logging the warn message
 						time.Sleep(500 * time.Millisecond)
