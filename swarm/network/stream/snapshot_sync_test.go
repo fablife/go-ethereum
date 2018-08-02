@@ -185,6 +185,7 @@ func testSyncingViaGlobalSync(t *testing.T, chunkCount int, nodeCount int) {
 		//get the the node at that index
 		//this is the node selected for upload
 		node := sim.RandomUpNode()
+
 		item, ok := sim.NodeItem(node.ID, bucketKeyStore)
 		if !ok {
 			return fmt.Errorf("No localstore")
