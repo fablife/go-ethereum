@@ -34,6 +34,8 @@ import (
 	"github.com/ethereum/go-ethereum/swarm/pot"
 	"github.com/ethereum/go-ethereum/swarm/state"
 	"github.com/ethereum/go-ethereum/swarm/storage"
+	"github.com/ethereum/go-ethereum/swarm/swap"
+	opentracing "github.com/opentracing/opentracing-go"
 )
 
 const (
@@ -48,6 +50,7 @@ const (
 
 // Registry registry for outgoing and incoming streamer constructors
 type Registry struct {
+	swap           *swap.Swap
 	api            *API
 	addr           *network.BzzAddr
 	skipCheck      bool
@@ -98,6 +101,12 @@ func NewRegistry(addr *network.BzzAddr, delivery *Delivery, syncChunkStore stora
 	})
 	RegisterSwarmSyncerServer(streamer, syncChunkStore)
 	RegisterSwarmSyncerClient(streamer, syncChunkStore)
+
+	var err error
+	streamer.swap, err = swap.NewSwap(swap.NewDefaultSwapParams().Params)
+	if err != nil {
+		log.Error(err.Error())
+	}
 
 	if options.DoSync {
 		// latestIntC function ensures that
@@ -378,7 +387,7 @@ func (r *Registry) Run(p *network.BzzPeer) error {
 		}
 	}
 
-	return sp.Run(sp.HandleMsg)
+	return sp.Run(sp.HandleAccountedMsg)
 }
 
 // updateSyncing subscribes to SYNC streams by iterating over the
@@ -453,8 +462,16 @@ func (r *Registry) runProtocol(p *p2p.Peer, rw p2p.MsgReadWriter) error {
 	return r.Run(bp)
 }
 
+func (p *Peer) HandleAccountedMsg(ctx context.Context, msg interface{}) error {
+	err := p.handleMsg(ctx, msg)
+	if _, ok := msg.(swap.SwapAccountedMsgType); ok && err == nil {
+		p.streamer.swap.AccountForMsg(ctx, msg, p.ID())
+	}
+	return err
+}
+
 // HandleMsg is the message handler that delegates incoming messages
-func (p *Peer) HandleMsg(ctx context.Context, msg interface{}) error {
+func (p *Peer) handleMsg(ctx context.Context, msg interface{}) error {
 	switch msg := msg.(type) {
 
 	case *SubscribeMsg:
