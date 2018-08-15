@@ -151,7 +151,7 @@ func testSyncingViaGlobalSync(t *testing.T, chunkCount int, nodeCount int) {
 			delivery := NewDelivery(kad, netStore)
 			netStore.NewNetFetcherFunc = network.NewFetcherFactory(dummyRequestFromPeers, true).New
 
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
+			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil, &RegistryOptions{
 				DoSync:          true,
 				SyncUpdateDelay: 3 * time.Second,
 			})
@@ -334,7 +334,7 @@ func testSyncingViaDirectSubscribe(t *testing.T, chunkCount int, nodeCount int) 
 			delivery := NewDelivery(kad, netStore)
 			netStore.NewNetFetcherFunc = network.NewFetcherFactory(dummyRequestFromPeers, true).New
 
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil)
+			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil, nil)
 			bucket.Store(bucketKeyRegistry, r)
 
 			fileStore := storage.NewFileStore(netStore, storage.NewFileStoreParams())

@@ -134,7 +134,7 @@ func runFileRetrievalTest(nodeCount int) error {
 			delivery := NewDelivery(kad, netStore)
 			netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
 
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
+			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil, &RegistryOptions{
 				DoSync:          true,
 				SyncUpdateDelay: 3 * time.Second,
 			})
@@ -284,7 +284,7 @@ func runRetrievalTest(chunkCount int, nodeCount int) error {
 			delivery := NewDelivery(kad, netStore)
 			netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
 
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
+			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil, &RegistryOptions{
 				DoSync:          true,
 				SyncUpdateDelay: 0,
 			})

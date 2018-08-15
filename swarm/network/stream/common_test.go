@@ -114,7 +114,7 @@ func newStreamerTester(t *testing.T) (*p2ptest.ProtocolTester, *Registry, *stora
 
 	delivery := NewDelivery(to, netStore)
 	netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
-	streamer := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil)
+	streamer := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), nil, nil)
 	teardown := func() {
 		streamer.Close()
 		removeDataDir()
