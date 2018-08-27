@@ -183,7 +183,7 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	delivery := stream.NewDelivery(to, self.netStore)
 	self.netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, config.DeliverySkipCheck).New
 
-	self.swap, err = swap.NewSwap(swap.NewDefaultSwapParams().Params, stateStore)
+	self.swap, err = swap.New(stateStore)
 	if err != nil {
 		return nil, err
 	}
