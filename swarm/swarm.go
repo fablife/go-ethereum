@@ -183,9 +183,11 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	delivery := stream.NewDelivery(to, self.netStore)
 	self.netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, config.DeliverySkipCheck).New
 
-	self.swap, err = swap.New(stateStore)
-	if err != nil {
-		return nil, err
+	if config.SwapEnabled {
+		self.swap, err = swap.New(stateStore)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	self.streamer = stream.NewRegistry(addr, delivery, self.netStore, stateStore, self.swap, &stream.RegistryOptions{
@@ -348,7 +350,7 @@ func (self *Swarm) Start(srv *p2p.Server) error {
 	newaddr := self.bzz.UpdateLocalAddr([]byte(srv.Self().String()))
 	log.Info("Updated bzz local addr", "oaddr", fmt.Sprintf("%x", newaddr.OAddr), "uaddr", fmt.Sprintf("%s", newaddr.UAddr))
 	// set chequebook
-	if self.config.SwapEnabled {
+	if self.config.SwapEnabled && self.config.SwapAPI != "" {
 		ctx := context.Background() // The initial setup has no deadline.
 		err := self.SetChequebook(ctx)
 		if err != nil {
@@ -367,15 +369,6 @@ func (self *Swarm) Start(srv *p2p.Server) error {
 		return err
 	}
 	log.Info("Swarm network started", "bzzaddr", fmt.Sprintf("%x", self.bzz.Hive.BaseAddr()))
-
-	/*
-		err = self.swap.Start(srv)
-		if err != nil {
-			log.Error("swap failed", "err", err)
-			return err
-		}
-		log.Debug("Swap accounting initialized")
-	*/
 
 	if self.ps != nil {
 		self.ps.Start(srv)
