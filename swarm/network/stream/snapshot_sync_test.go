@@ -481,29 +481,64 @@ func startSyncing(r *Registry, conf *synctestConfig) (int, error) {
 	return subCnt, nil
 }
 
-//map chunk keys to addresses which are responsible
-func mapKeysToNodes(conf *synctestConfig) {
-	kmap := make(map[string][]int)
-	nodemap := make(map[string][]int)
-	//build a pot for chunk hashes
-	np := pot.NewPot(nil, 0)
-	indexmap := make(map[string]int)
-	for i, a := range conf.addrs {
-		indexmap[string(a)] = i
-		np, _, _ = pot.Add(np, a, pof)
+func TestSyncAlgo(t *testing.T) {
+	idToAddrMap := make(map[discover.NodeID]string)
+	addrs := make([][]byte, 8)
+
+	addrs[0] = []byte("0000000000000000")
+	addrs[1] = []byte("0100000000000000")
+	addrs[2] = []byte("0001000000000000")
+	addrs[3] = []byte("0000010000000000")
+	addrs[4] = []byte("0000000100000000")
+	addrs[5] = []byte("0000000001000000")
+	addrs[6] = []byte("0000000000010000")
+	addrs[7] = []byte("0000000000000100")
+
+	addrToIDMap := make(map[string]discover.NodeID)
+	for i := 0; i < 8; i++ {
+		dID := network.NewNodeIDFromAddr(network.RandomAddr())
+		addrToIDMap[string(addrs[i])] = dID
+		idToAddrMap[dID] = string(addrs[i])
 	}
-	//for each address, run EachNeighbour on the chunk hashes pot to identify closest nodes
-	log.Trace(fmt.Sprintf("Generated hash chunk(s): %v", conf.hashes))
-	for i := 0; i < len(conf.hashes); i++ {
+
+	hashes := make([]storage.Address, 8)
+
+	hashes[0] = []byte("0000000000000000")
+	hashes[1] = []byte("0100000000000000")
+	hashes[2] = []byte("0001000000000000")
+	hashes[3] = []byte("0000010000000000")
+	hashes[4] = []byte("0000000100000000")
+	hashes[5] = []byte("0000000001000000")
+	hashes[6] = []byte("0000000000010000")
+	hashes[7] = []byte("0000000000000100")
+
+	idToChunkMap := MapHashesToNodes(addrs, addrToIDMap, hashes)
+	for node, idxarr := range idToChunkMap {
+		fmt.Println(fmt.Sprintf("Node %s got indexes %v ", idToAddrMap[node], idxarr))
+	}
+}
+
+func MapHashesToNodes(addrs [][]byte, addrToIDMap map[string]discover.NodeID, hashes []storage.Address) map[discover.NodeID][]int {
+	idToChunksMap := make(map[discover.NodeID][]int)
+	nodemap := make(map[string][]int)
+	np := pot.NewPot(nil, 0)
+	pof16 := pot.DefaultPof(16)
+	indexmap := make(map[string]int)
+	for i, a := range addrs {
+		indexmap[string(a)] = i
+		//np, _, _ = pot.Add(np, a, pof)
+		np, _, _ = pot.Add(np, a, pof16)
+	}
+	for i := 0; i < len(hashes); i++ {
 		pl := 256 //highest possible proximity
 		var nns []int
-		np.EachNeighbour([]byte(conf.hashes[i]), pof, func(val pot.Val, po int) bool {
+		np.EachNeighbour([]byte(hashes[i]), pof16, func(val pot.Val, po int) bool {
 			a := val.([]byte)
 			if pl < 256 && pl != po {
 				return false
 			}
 			if pl == 256 || pl == po {
-				log.Trace(fmt.Sprintf("appending %s", conf.addrToIDMap[string(a)]))
+				//log.Trace(fmt.Sprintf("appending %s", conf.addrToIDMap[string(a)]))
 				nns = append(nns, indexmap[string(a)])
 				nodemap[string(a)] = append(nodemap[string(a)], i)
 			}
@@ -514,14 +549,23 @@ func mapKeysToNodes(conf *synctestConfig) {
 			}
 			return true
 		})
-		kmap[string(conf.hashes[i])] = nns
 	}
 	for addr, chunks := range nodemap {
 		//this selects which chunks are expected to be found with the given node
-		conf.idToChunksMap[conf.addrToIDMap[addr]] = chunks
+		idToChunksMap[addrToIDMap[addr]] = chunks
 	}
+	return idToChunksMap
+}
+
+//map chunk keys to addresses which are responsible
+func mapKeysToNodes(conf *synctestConfig) {
+	//kmap := make(map[string][]int)
+	conf.idToChunksMap = MapHashesToNodes(conf.addrs, conf.addrToIDMap, conf.hashes)
+	//build a pot for chunk hashes
+	//for each address, run EachNeighbour on the chunk hashes pot to identify closest nodes
+	log.Trace(fmt.Sprintf("Generated hash chunk(s): %v", conf.hashes))
 	log.Debug(fmt.Sprintf("Map of expected chunks by ID: %v", conf.idToChunksMap))
-	conf.chunksToNodesMap = kmap
+	//conf.chunksToNodesMap = kmap
 }
 
 //upload a file(chunks) to a single local node store
