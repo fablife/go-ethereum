@@ -104,6 +104,45 @@ func TestRetrieval(t *testing.T) {
 	}
 }
 
+var retrievalSimServiceMap = map[string]simulation.ServiceFunc{
+	"streamer": retrievalStreamerFunc,
+}
+
+func retrievalStreamerFunc(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
+	id := ctx.Config.ID
+	addr := network.NewAddrFromNodeID(id)
+	store, datadir, err := createTestLocalStorageForID(id, addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	bucket.Store(bucketKeyStore, store)
+
+	localStore := store.(*storage.LocalStore)
+	netStore, err := storage.NewNetStore(localStore, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	kad := network.NewKademlia(addr.Over(), network.NewKadParams())
+	delivery := NewDelivery(kad, netStore)
+	netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
+
+	r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
+		DoSync:          true,
+		SyncUpdateDelay: 3 * time.Second,
+	})
+
+	fileStore := storage.NewFileStore(netStore, storage.NewFileStoreParams())
+	bucket.Store(bucketKeyFileStore, fileStore)
+
+	cleanup = func() {
+		os.RemoveAll(datadir)
+		netStore.Close()
+		r.Close()
+	}
+
+	return r, cleanup, nil
+}
+
 /*
 
 The test loads a snapshot file to construct the swarm network,
@@ -114,44 +153,7 @@ simulation's `action` function.
 The snapshot should have 'streamer' in its service list.
 */
 func runFileRetrievalTest(nodeCount int) error {
-	sim := simulation.New(map[string]simulation.ServiceFunc{
-		"streamer": func(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
-
-			id := ctx.Config.ID
-			addr := network.NewAddrFromNodeID(id)
-			store, datadir, err := createTestLocalStorageForID(id, addr)
-			if err != nil {
-				return nil, nil, err
-			}
-			bucket.Store(bucketKeyStore, store)
-
-			localStore := store.(*storage.LocalStore)
-			netStore, err := storage.NewNetStore(localStore, nil)
-			if err != nil {
-				return nil, nil, err
-			}
-			kad := network.NewKademlia(addr.Over(), network.NewKadParams())
-			delivery := NewDelivery(kad, netStore)
-			netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
-
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
-				DoSync:          true,
-				SyncUpdateDelay: 3 * time.Second,
-			})
-
-			fileStore := storage.NewFileStore(netStore, storage.NewFileStoreParams())
-			bucket.Store(bucketKeyFileStore, fileStore)
-
-			cleanup = func() {
-				os.RemoveAll(datadir)
-				netStore.Close()
-				r.Close()
-			}
-
-			return r, cleanup, nil
-
-		},
-	})
+	sim := simulation.New(retrievalSimServiceMap)
 	defer sim.Close()
 
 	log.Info("Initializing test config")
@@ -264,45 +266,7 @@ simulation's `action` function.
 The snapshot should have 'streamer' in its service list.
 */
 func runRetrievalTest(chunkCount int, nodeCount int) error {
-	sim := simulation.New(map[string]simulation.ServiceFunc{
-		"streamer": func(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
-
-			id := ctx.Config.ID
-			addr := network.NewAddrFromNodeID(id)
-			store, datadir, err := createTestLocalStorageForID(id, addr)
-			if err != nil {
-				return nil, nil, err
-			}
-			bucket.Store(bucketKeyStore, store)
-
-			localStore := store.(*storage.LocalStore)
-			netStore, err := storage.NewNetStore(localStore, nil)
-			if err != nil {
-				return nil, nil, err
-			}
-			kad := network.NewKademlia(addr.Over(), network.NewKadParams())
-			delivery := NewDelivery(kad, netStore)
-			netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
-
-			r := NewRegistry(addr, delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
-				DoSync:          true,
-				SyncUpdateDelay: 0,
-			})
-
-			fileStore := storage.NewFileStore(netStore, storage.NewFileStoreParams())
-			bucketKeyFileStore = simulation.BucketKey("filestore")
-			bucket.Store(bucketKeyFileStore, fileStore)
-
-			cleanup = func() {
-				os.RemoveAll(datadir)
-				netStore.Close()
-				r.Close()
-			}
-
-			return r, cleanup, nil
-
-		},
-	})
+	sim := simulation.New(retrievalSimServiceMap)
 	defer sim.Close()
 
 	conf := &synctestConfig{}
