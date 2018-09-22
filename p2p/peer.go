@@ -123,6 +123,10 @@ func NewPeer(id discover.NodeID, name string, caps []Cap) *Peer {
 	return peer
 }
 
+func (p *Peer) Events() *event.Feed {
+	return p.events
+}
+
 // ID returns the node's public key.
 func (p *Peer) ID() discover.NodeID {
 	return p.rw.id
