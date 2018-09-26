@@ -183,14 +183,7 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	delivery := stream.NewDelivery(to, self.netStore)
 	self.netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, config.DeliverySkipCheck).New
 
-	if config.SwapEnabled {
-		self.swap, err = swap.New(stateStore)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	self.streamer = stream.NewRegistry(addr, delivery, self.netStore, stateStore, self.swap, &stream.RegistryOptions{
+	self.streamer = stream.NewRegistry(addr, delivery, self.netStore, stateStore, &stream.RegistryOptions{
 		SkipCheck:       config.SyncingSkipCheck,
 		DoSync:          config.SyncEnabled,
 		DoRetrieve:      true,
@@ -214,6 +207,10 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	log.Debug("Setup local storage")
 
 	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, self.streamer.Run)
+
+	if config.SwapEnabled {
+		self.swap = swap.New(stateStore)
+	}
 
 	// Pss = postal service over swarm (devp2p over bzz)
 	self.ps, err = pss.NewPss(to, config.Pss)
@@ -370,6 +367,10 @@ func (self *Swarm) Start(srv *p2p.Server) error {
 	}
 	log.Info("Swarm network started", "bzzaddr", fmt.Sprintf("%x", self.bzz.Hive.BaseAddr()))
 
+	if self.swap != nil {
+		self.swap.Start(srv)
+	}
+
 	if self.ps != nil {
 		self.ps.Start(srv)
 	}
@@ -447,6 +448,10 @@ func (self *Swarm) Protocols() (protos []p2p.Protocol) {
 
 	if self.ps != nil {
 		protos = append(protos, self.ps.Protocols()...)
+	}
+
+	if self.swap != nil {
+		protos = append(protos, self.swap.Protocols()...)
 	}
 	return
 }

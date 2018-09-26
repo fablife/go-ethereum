@@ -19,8 +19,6 @@ package stream
 import (
 	"context"
 	"errors"
-	"math/big"
-	"time"
 
 	"fmt"
 
@@ -130,11 +128,6 @@ func (s *SwarmChunkServer) GetData(ctx context.Context, key []byte) ([]byte, err
 type RetrieveRequestMsg struct {
 	Addr      storage.Address
 	SkipCheck bool
-}
-
-//TODO: what is the correct price
-func (rrm *RetrieveRequestMsg) Price() *big.Int {
-	return big.NewInt(int64(4096))
 }
 
 func (d *Delivery) handleRetrieveRequestMsg(ctx context.Context, sp *Peer, req *RetrieveRequestMsg) error {
