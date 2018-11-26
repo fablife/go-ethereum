@@ -322,14 +322,20 @@ func countMatchingProtocols(protocols []Protocol, caps []Cap) int {
 
 // matchProtocols creates structures for matching named subprotocols.
 func matchProtocols(protocols []Protocol, caps []Cap, rw MsgReadWriter) map[string]*protoRW {
+	l := sync.RWMutex{}
 	sort.Sort(capsByNameAndVersion(caps))
 	offset := baseProtocolLength
 	result := make(map[string]*protoRW)
 
+	l.Lock()
+	fmt.Println("@@@@@@@@@@@@@@@@@@@@@@@@@")
+	fmt.Println(caps)
+	fmt.Println(protocols)
 outer:
 	for _, cap := range caps {
 		for _, proto := range protocols {
 			if proto.Name == cap.Name && proto.Version == cap.Version {
+				fmt.Println(fmt.Sprintf("proto %s:%d matches with caps %s:%d", proto.Name, proto.Version, cap.Name, cap.Version))
 				// If an old protocol version matched, revert it
 				if old := result[cap.Name]; old != nil {
 					offset -= old.Length
@@ -339,14 +345,20 @@ outer:
 				offset += proto.Length
 
 				continue outer
+			} else {
+				fmt.Println(fmt.Sprintf("proto - %s:%d DOES NOT MATCH with caps - %s:%d !!!!", proto.Name, proto.Version, cap.Name, cap.Version))
 			}
 		}
 	}
+	fmt.Println("@@@@@@@@@@@@@@@@@@@@@@@@@")
+	l.Unlock()
 	return result
 }
 
 func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error) {
 	p.wg.Add(len(p.running))
+	fmt.Println("----------------------------------")
+	fmt.Println(p.running)
 	for _, proto := range p.running {
 		proto := proto
 		proto.closed = p.closed

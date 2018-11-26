@@ -249,6 +249,8 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 				return nil, err
 			}
 			sn.running[name] = service
+			fmt.Println("OOOOOOOOOOOOOOOOO")
+			fmt.Println(sn.running)
 			return service, nil
 		}
 	}
@@ -258,6 +260,8 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	var regErr error
 	sn.registerOnce.Do(func() {
 		for _, name := range sn.config.Services {
+			fmt.Println("%%%%%%%%%%%%%")
+			fmt.Println(name)
 			if err := sn.node.Register(newService(name)); err != nil {
 				regErr = err
 				break

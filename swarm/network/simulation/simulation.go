@@ -19,6 +19,7 @@ package simulation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -83,6 +84,8 @@ func New(services map[string]ServiceFunc) (s *Simulation) {
 		// Scope this variables correctly
 		// as they will be in the adapterServices[name] function accessed later.
 		name, serviceFunc := name, serviceFunc
+		fmt.Println("#############")
+		fmt.Println(name)
 		s.serviceNames = append(s.serviceNames, name)
 		adapterServices[name] = func(ctx *adapters.ServiceContext) (node.Service, error) {
 			b := new(sync.Map)

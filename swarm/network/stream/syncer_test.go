@@ -28,8 +28,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/swarm/log"
 	"github.com/ethereum/go-ethereum/swarm/network"
 	"github.com/ethereum/go-ethereum/swarm/network/simulation"
@@ -398,4 +400,134 @@ func TestDifferentVersionID(t *testing.T) {
 	}
 	log.Info("Simulation ended")
 
+}
+
+//TestDifferentVersionID proves that if the streamer protocol version doesn't match,
+//then the peers are not connected at streamer level
+func TestMultiSrvDifferentVersionID(t *testing.T) {
+	//create a variable to hold the version ID
+	v := uint(0)
+	sim := simulation.New(map[string]simulation.ServiceFunc{
+		"fake": func(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
+			t := &TestProto{}
+			return t, cleanup, nil
+
+		},
+		"streamer": func(ctx *adapters.ServiceContext, bucket *sync.Map) (s node.Service, cleanup func(), err error) {
+			var store storage.ChunkStore
+			var datadir string
+
+			node := ctx.Config.Node()
+			addr := network.NewAddr(node)
+
+			store, datadir, err = createTestLocalStorageForID(node.ID(), addr)
+			if err != nil {
+				return nil, nil, err
+			}
+			bucket.Store(bucketKeyStore, store)
+			cleanup = func() {
+				store.Close()
+				os.RemoveAll(datadir)
+			}
+			localStore := store.(*storage.LocalStore)
+			netStore, err := storage.NewNetStore(localStore, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			bucket.Store(bucketKeyDB, netStore)
+			kad := network.NewKademlia(addr.Over(), network.NewKadParams())
+			delivery := NewDelivery(kad, netStore)
+			netStore.NewNetFetcherFunc = network.NewFetcherFactory(delivery.RequestFromPeers, true).New
+
+			bucket.Store(bucketKeyDelivery, delivery)
+
+			r := NewRegistry(addr.ID(), delivery, netStore, state.NewInmemoryStore(), &RegistryOptions{
+				Retrieval: RetrievalDisabled,
+				Syncing:   SyncingAutoSubscribe,
+			}, nil)
+
+			//increase the version ID for each node
+			v++
+			r.spec.Version = v
+			log.Debug("Created registry")
+
+			bucket.Store(bucketKeyRegistry, r)
+
+			return r, cleanup, nil
+
+		},
+	})
+	defer sim.Close()
+
+	//connect the nodes
+	log.Info("Adding nodes to simulation")
+	_, err := sim.AddNodesAndConnectChain(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	log.Info("Starting simulation")
+	time.Sleep(2 * time.Second)
+	ctx := context.Background()
+	//make sure they have time to connect
+	result := sim.Run(ctx, func(ctx context.Context, sim *simulation.Simulation) error {
+		//get the pivot node's filestore
+		nodes := sim.UpNodeIDs()
+
+		item, ok := sim.NodeItem(nodes[0], bucketKeyRegistry)
+		if !ok {
+			return fmt.Errorf("No filestore")
+		}
+		registry := item.(*Registry)
+
+		//getting the other peer should fail due to the different version numbers
+		if registry.getPeer(nodes[1]) != nil {
+			t.Fatal("Expected the peer to be nil, but it is not")
+		}
+		return nil
+	})
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	log.Info("Simulation ended")
+
+}
+
+type TestProto struct{}
+
+func (t *TestProto) run(*p2p.Peer, p2p.MsgReadWriter) error {
+	log.Debug("run")
+	time.Sleep(3 * time.Second)
+	return nil
+}
+
+func (t *TestProto) Protocols() []p2p.Protocol {
+	return []p2p.Protocol{
+		{
+			Name:    "test",
+			Version: 1,
+			Length:  100,
+			Run:     t.run,
+		},
+	}
+}
+
+func (t *TestProto) APIs() []rpc.API {
+	return []rpc.API{
+		{
+			Namespace: "test",
+			Version:   "1.0",
+			Service:   t,
+			Public:    true,
+		},
+	}
+}
+
+func (t *TestProto) Start(server *p2p.Server) error {
+	log.Info("started")
+	return nil
+}
+
+func (t *TestProto) Stop() error {
+	return nil
 }
