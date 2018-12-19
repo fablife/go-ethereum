@@ -18,7 +18,6 @@ package network
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -883,4 +882,112 @@ func TestEachBin(t *testing.T) {
 			log.Debug(fmt.Sprintf("%d,", bin))
 		}
 	}
+}
+
+/*
+TestEachBin is a unit test for the kademlia's `EachBin` function.
+That function is actually used only for streamer subscriptions.
+
+Thus, the test does:
+	* assigns each known connected peer to a bin map
+  * build up a known kademlia in advance
+	* runs the EachBin function, which returns supposed subscription bins
+	* store all supposed bins per peer in a map
+	* check that all peers have the expected subscriptions
+
+This kad table and its peers are copied from TestKademliaCase1,
+it represents an edge case but for the purpose of a unit test for
+the `EachBin` function it is ok.
+
+Addresses used in this test are discovered as part of the simulation network
+in higher level tests for streaming. They were generated randomly.
+
+=========================================================================
+Thu Dec 13 14:21:47 UTC 2018 KΛÐΞMLIΛ hive: queen's address: 7efef1
+population: 49 (49), MinProxBinSize: 2, MinBinSize: 2, MaxBinSize: 4
+000 18 8196 835f 8958 8e23          | 18 8196 (0) 835f (0) 8958 (0) 8e23 (0)
+001 14 2690 28f0 2850 3a51          | 14 2690 (0) 28f0 (0) 2850 (0) 3a51 (0)
+002 11 4d72 4a45 4375 4607          | 11 4d72 (0) 4a45 (0) 4375 (0) 4607 (0)
+003  1 646e                         |  1 646e (0)
+004  3 769c 76d1 7656               |  3 769c (0) 76d1 (0) 7656 (0)
+============ DEPTH: 5 ==========================================
+005  1 7a48                         |  1 7a48 (0)
+006  1 7cbd                         |  1 7cbd (0)
+007  0                              |  0
+008  0                              |  0
+009  0                              |  0
+010  0                              |  0
+011  0                              |  0
+012  0                              |  0
+013  0                              |  0
+014  0                              |  0
+015  0                              |  0
+=========================================================================
+*/
+func TestHighBin(t *testing.T) {
+	//the pivot address; this is the actual kademlia node
+	pivotAddr := "7efef1c41d77f843ad167be95f6660567eb8a4a59f39240000cce2e0d65baf8e"
+	highAddr := "7efef1c41d77f843ad167be95f6660567eb8a400000000000000000000000000"
+
+	//a map of bin number to addresses from the given kademlia
+	binMap := make(map[int][]string)
+	binMap[0] = []string{
+		"835fbbf1d16ba7347b6e2fc552d6e982148d29c624ea20383850df3c810fa8fc",
+		"81968a2d8fb39114342ee1da85254ec51e0608d7f0f6997c2a8354c260a71009",
+	}
+	binMap[1] = []string{
+		"28f0bc1b44658548d6e05dd16d4c2fe77f1da5d48b6774bc4263b045725d0c19",
+		"2690a910c33ee37b91eb6c4e0731d1d345e2dc3b46d308503a6e85bbc242c69e",
+	}
+	binMap[2] = []string{
+		"4a45f1fc63e1a9cb9dfa44c98da2f3d20c2923e5d75ff60b2db9d1bdb0c54d51",
+		"4d72a04ddeb851a68cd197ef9a92a3e2ff01fbbff638e64929dd1a9c2e150112",
+	}
+	binMap[3] = []string{
+		"646e9540c84f6a2f9cf6585d45a4c219573b4fd1b64a3c9a1386fc5cf98c0d4d",
+	}
+	binMap[4] = []string{
+		"7656caccdc79cd8d7ce66d415cc96a718e8271c62fb35746bfc2b49faf3eebf3",
+		"76d1e83c71ca246d042e37ff1db181f2776265fbcfdc890ce230bfa617c9c2f0",
+		"769ce86aa90b518b7ed382f9fdacfbed93574e18dc98fe6c342e4f9f409c2d5a",
+	}
+	binMap[5] = []string{
+		"7a48f75f8ca60487ae42d6f92b785581b40b91f2da551ae73d5eae46640e02e8",
+	}
+	binMap[6] = []string{
+		"7cbd42350bde8e18ae5b955b5450f8e2cef3419f92fbf5598160c60fd78619f0",
+	}
+
+	//create the pivot's kademlia
+	addr := common.FromHex(pivotAddr)
+	k := NewKademlia(addr, NewKadParams())
+
+	//construct the peers and the kademlia
+	for _, binaddrs := range binMap {
+		for _, a := range binaddrs {
+			addr := common.FromHex(a)
+			k.On(NewPeer(&BzzPeer{BzzAddr: &BzzAddr{OAddr: addr}}, k))
+		}
+	}
+
+	highNode := common.FromHex(highAddr)
+	highPeer := NewPeer(&BzzPeer{BzzAddr: &BzzAddr{OAddr: highNode}}, k)
+	peerstr := fmt.Sprintf("%x", highPeer.Over())
+	k.On(highPeer)
+
+	//TODO: check kad table is same
+	//currently k.String() prints date so it will never be the same :)
+	//--> implement JSON representation of kad table
+	log.Debug(k.String())
+
+	k.EachConn(nil, 255, func(p *Peer, po int, b bool) bool {
+		pstr := fmt.Sprintf("%x", p.Over())
+		if pstr == peerstr {
+			if po != k.MaxProxDisplay {
+				t.Fatalf("Expected peer with high matching PO to be at MaxProxDisplay, but it is at %d", po)
+				return false
+			}
+		}
+		return true
+	})
 }
