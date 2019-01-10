@@ -471,9 +471,11 @@ func (r *Registry) updateSyncing() {
 		peer.serverMu.RUnlock()
 	}
 	r.peersMu.RUnlock()
+	log.Debug("subs len 1: ", "len", len(subs))
 
 	// start requesting subscriptions from peers
 	r.requestPeerSubscriptions(kad, subs)
+	log.Debug("subs len 2: ", "len", len(subs))
 
 	// remove SYNC servers that do not need to be subscribed
 	for id, streams := range subs {
@@ -492,6 +494,7 @@ func (r *Registry) updateSyncing() {
 			}
 		}
 	}
+	log.Debug("subs len 3: ", "len", len(subs))
 }
 
 // requestPeerSubscriptions calls on each live peer in the kademlia table
@@ -515,7 +518,7 @@ func (r *Registry) requestPeerSubscriptions(kad *network.Kademlia, subs map[enod
 	// request subscriptions for all nodes and bins
 	// nil as base takes the node's base; we need to pass 255 as `EachConn` runs
 	// from deepest bins backwards
-	kad.EachConn(nil, 255, func(p *network.Peer, po int, _ bool) bool {
+	kad.EachConn(nil, 255, func(p *network.Peer, po int) bool {
 		//if the peer's bin is shallower than the kademlia depth,
 		//only the peer's bin should be subscribed
 		if po < kadDepth {
@@ -546,6 +549,7 @@ func doRequestSubscription(r *Registry, p *network.Peer, bin uint8, subs map[eno
 		delete(streams, stream)
 		delete(streams, getHistoryStream(stream))
 	}
+	log.Debug("subs len 11: ", "len", len(subs))
 	err := r.RequestSubscription(p.ID(), stream, NewRange(0, 0), High)
 	if err != nil {
 		log.Debug("Request subscription", "err", err, "peer", p.ID(), "stream", stream)
